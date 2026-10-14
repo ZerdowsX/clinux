@@ -23,6 +23,9 @@ enum app_id {
 	APP_CLOCK,
 	APP_PREFS,
 	APP_ABOUT,
+	APP_X11,		/* any X11 program shown through the X11 bridge */
+	APP_FIREFOX,
+	APP_ALERT,
 	APP_COUNT
 };
 
@@ -43,6 +46,8 @@ struct window {
 	int minimized, zoomed, saved[4];
 	int resizable, min_w, min_h;
 	int hover_btns, pressed_btn;
+	/* The content draws its own pointer (X11 programs). */
+	int own_cursor;
 
 	enum anim_kind anim;
 	double anim_t0;
@@ -51,6 +56,8 @@ struct window {
 	void (*draw)(window_t *win, surface_t *s, int x, int y, int w, int h);
 	void (*mouse)(window_t *win, const event_t *ev, int x, int y);
 	void (*key)(window_t *win, const event_t *ev);
+	/* If set, receives raw key presses and releases instead of key. */
+	void (*rawkey)(window_t *win, const event_t *ev);
 	void (*tick)(window_t *win);
 	void (*resized)(window_t *win);
 	void (*destroy)(window_t *win);
@@ -77,6 +84,9 @@ struct desktop {
 	int redraw;
 	int quit;
 	unsigned long frames;
+	/* The person using the desktop; programs run as them, not as root. */
+	int uid, gid;
+	char user[64], home[256], shell[128];
 };
 
 extern struct desktop dt;
@@ -101,6 +111,8 @@ void icon_gear(surface_t *s, float x, float y, float size);
 void icon_trash(surface_t *s, float x, float y, float size);
 void icon_disk(surface_t *s, float x, float y, float size);
 void icon_app(surface_t *s, float x, float y, float size);
+void icon_globe(surface_t *s, float x, float y, float size);
+void icon_network(surface_t *s, float x, float y, float size, int connected);
 
 /* aqua.c - Aqua widgets. */
 void aqua_gel_circle(surface_t *s, float cx, float cy, float r, uint32_t base);
@@ -134,10 +146,36 @@ void wm_dock_bounce(enum app_id app);
 void app_launch(enum app_id app);
 void app_about(void);
 void app_terminal(void);
+/* Terminal running cmd in the user's shell, then staying interactive. */
+void app_terminal_cmd(const char *cmd);
+/* Show an X11 program in an Aqua window; returns 0 on success. */
+int app_x11(const char *cmd, const char *title, enum app_id app);
+int x11_available(void);
+void app_firefox(void);
+const char *firefox_path(void);
+/* A small dialog; button2/act2 may be NULL. */
+void wc_alert(const char *title, const char *message, const char *button2,
+	      void (*act2)(void));
 void app_files(const char *path, const char *title);
 void app_prefs(void);
 void app_clock(void);
 
 void wc_shutdown(int reboot_instead);
+
+/* user.c - run programs as the desktop user. */
+void user_init(void);
+/* Call in a forked child before exec: drop to the user, set HOME etc. */
+void user_become(void);
+
+/* net.c - network status for the menu bar and preferences. */
+struct net_status {
+	int connected;		/* has an IPv4 address and a default route */
+	char ifname[32];
+	char addr[64];
+	char gateway[64];
+	char dns[64];
+	char kind[32];		/* "Ethernet", "Wi-Fi", ... */
+};
+void net_poll(struct net_status *st);
 
 #endif

@@ -42,6 +42,8 @@ static int dd_x, dd_y, dd_w, dd_h;
 static surface_t *menubar_surf, *dropdown_surf, *dropdown_shadow;
 static int menubar_dirty = 1, dropdown_dirty;
 static char menubar_clock[64];
+static struct net_status net;
+static surface_t *net_icon[2];
 
 /* ---------------------------------------------------------------------- */
 /* Dock                                                                   */
@@ -69,6 +71,7 @@ static int clock_icon_minute = -1;
 
 static struct dock_item apps_dock[] = {
 	{ .kind = DOCK_APP, .app = APP_FILES, .name = "Files" },
+	{ .kind = DOCK_APP, .app = APP_FIREFOX, .name = "Firefox" },
 	{ .kind = DOCK_APP, .app = APP_TERMINAL, .name = "Terminal" },
 	{ .kind = DOCK_APP, .app = APP_CLOCK, .name = "Clock" },
 	{ .kind = DOCK_APP, .app = APP_PREFS, .name = "System Preferences" },
@@ -97,6 +100,9 @@ static const char *const app_names[APP_COUNT] = {
 	[APP_CLOCK] = "Clock",
 	[APP_PREFS] = "System Preferences",
 	[APP_ABOUT] = "Files",
+	[APP_X11] = "X11",
+	[APP_FIREFOX] = "Firefox",
+	[APP_ALERT] = "Files",
 };
 
 double now_s(void)
@@ -695,14 +701,15 @@ static void act_about(void) { app_about(); }
 static void act_prefs(void) { app_prefs(); }
 static void act_restart(void) { wc_shutdown(1); }
 static void act_shutdown(void) { wc_shutdown(0); }
-static void act_new_files(void) { app_files("/root", "Home"); }
+static void act_new_files(void) { app_files(dt.home, "Home"); }
 static void act_new_term(void) { app_terminal(); }
 static void act_clock(void) { app_clock(); }
+static void act_firefox(void) { app_firefox(); }
 static void act_close(void) { if (dt.focus) wm_close(dt.focus); }
 static void act_minimize(void) { if (dt.focus) wm_minimize(dt.focus); }
 static void act_zoom(void) { if (dt.focus) wm_zoom(dt.focus); }
 static void act_go_computer(void) { app_files("/", "Water HD"); }
-static void act_go_home(void) { app_files("/root", "Home"); }
+static void act_go_home(void) { app_files(dt.home, "Home"); }
 static void act_go_apps(void) { app_files("/bin", "Applications"); }
 static void act_go_utils(void) { app_files("/sbin", "Utilities"); }
 
@@ -800,6 +807,7 @@ static void build_menus(void)
 	add_item(m, "Computer", "\xe2\x8c\x98\xe2\x87\xa7" "C", 1, act_go_computer);
 	add_item(m, "Home", "\xe2\x8c\x98\xe2\x87\xa7H", 1, act_go_home);
 	add_item(m, "Applications", NULL, 1, act_go_apps);
+	add_item(m, "Firefox", NULL, 1, act_firefox);
 	add_item(m, "Utilities", NULL, 1, act_go_utils);
 
 	m = add_menu("Window");
@@ -870,9 +878,16 @@ static void draw_menubar(void)
 			if (dbl)
 				memmove(dbl, dbl + 1, strlen(dbl));
 		}
-		draw_text(s, fonts[FONT_UI], 14,
-			  s->w - 16 - text_width(fonts[FONT_UI], 14, buf), 16,
-			  0xff000000, buf);
+		int cx = s->w - 16 - text_width(fonts[FONT_UI], 14, buf);
+
+		draw_text(s, fonts[FONT_UI], 14, cx, 16, 0xff000000, buf);
+		if (!net_icon[0]) {
+			net_icon[0] = surf_new(18, 18);
+			icon_network(net_icon[0], 0, 0, 18, 0);
+			net_icon[1] = surf_new(18, 18);
+			icon_network(net_icon[1], 0, 0, 18, 1);
+		}
+		blit(s, net_icon[net.connected], cx - 30, 2, 255);
 	}
 	menubar_dirty = 0;
 }
@@ -1301,6 +1316,11 @@ void wm_event(const event_t *ev)
 				w->mouse(w, ev, ev->x - w->x - 1, ev->y - w->y - TITLE_H);
 		}
 		break;
+	case EV_KEYRAW:
+		/* Releases always go through so no key is left stuck down. */
+		if (dt.focus && dt.focus->rawkey && (open_menu < 0 || !ev->pressed))
+			dt.focus->rawkey(dt.focus, ev);
+		break;
 	case EV_KEYPRESS:
 		if (open_menu >= 0) {
 			if (ev->ch == 27)
@@ -1318,7 +1338,7 @@ void wm_event(const event_t *ev)
 			act_minimize();
 		} else if (is_key(ev, 'q')) {
 			act_quit_app();
-		} else if (dt.focus && dt.focus->key) {
+		} else if (dt.focus && dt.focus->key && !dt.focus->rawkey) {
 			dt.focus->key(dt.focus, ev);
 		}
 		dt.redraw = 1;
@@ -1344,6 +1364,9 @@ void wm_init(void)
 		case APP_TERMINAL:
 			apps_dock[i].icon = render_icon(icon_terminal, dock_max);
 			break;
+		case APP_FIREFOX:
+			apps_dock[i].icon = render_icon(icon_globe, dock_max);
+			break;
 		case APP_PREFS:
 			apps_dock[i].icon = render_icon(icon_gear, dock_max);
 			break;
@@ -1362,6 +1385,7 @@ void wm_init(void)
 	disk_y = MENUBAR_H + 18;
 	dock_build();
 	dock_layout();
+	net_poll(&net);
 	draw_menubar();
 }
 
@@ -1398,6 +1422,21 @@ void wm_tick(void)
 		}
 	}
 	update_clock_icon();
+
+	{
+		static double last_net;
+
+		if (dt.now - last_net > 3) {
+			int was = net.connected;
+
+			last_net = dt.now;
+			net_poll(&net);
+			if (was != net.connected) {
+				menubar_dirty = 1;
+				dt.redraw = 1;
+			}
+		}
+	}
 
 	localtime_r(&t, &tm);
 	strftime(buf, sizeof(buf), dt.set.show_seconds ? "%T" : "%H:%M", &tm);
@@ -1524,6 +1563,13 @@ void wm_render(void)
 		blit(f, dropdown_surf, dd_x, dd_y, 255);
 	}
 
-	blit(f, cursor_surf, ptr_x - 3, ptr_y - 3, 255);
+	{
+		window_t *under = open_menu < 0 ? window_at(ptr_x, ptr_y) : NULL;
+
+		/* X11 programs draw their own pointer (text beam, hand...). */
+		if (!(under && under->own_cursor && under->anim == ANIM_NONE &&
+		      ptr_y >= under->y + TITLE_H && !drag_win && !resize_win))
+			blit(f, cursor_surf, ptr_x - 3, ptr_y - 3, 255);
+	}
 	dt.frames++;
 }

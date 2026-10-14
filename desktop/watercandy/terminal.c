@@ -673,7 +673,7 @@ static void term_destroy(window_t *win)
 	free(t);
 }
 
-static int spawn_shell(struct term *t)
+static int spawn_shell(struct term *t, const char *cmd)
 {
 	char *slave_name;
 
@@ -688,7 +688,9 @@ static int spawn_shell(struct term *t)
 		return -1;
 	if (t->pid == 0) {
 		struct winsize ws = { .ws_row = t->rows, .ws_col = t->cols };
-		const char *home = getenv("HOME") ? getenv("HOME") : "/root";
+		const char *shell = access(dt.shell, X_OK) ? "/bin/sh" : dt.shell;
+		const char *base = strrchr(shell, '/') ? strrchr(shell, '/') + 1 : shell;
+		char login[160], script[1024];
 		int s;
 
 		setsid();
@@ -704,12 +706,18 @@ static int spawn_shell(struct term *t)
 			close(s);
 		signal(SIGCHLD, SIG_DFL);
 		signal(SIGPIPE, SIG_DFL);
+		user_become();
 		setenv("TERM", "xterm", 1);
-		setenv("HOME", home, 0);
 		setenv("PS1", "\\h:\\w \\u\\$ ", 1);
-		if (chdir(home) && chdir("/"))
-			_exit(1);
-		execl("/bin/bash", "-bash", (char *)NULL);
+		snprintf(login, sizeof(login), "-%s", base);
+		if (cmd) {
+			/* Run the command, then stay in an interactive shell. */
+			snprintf(script, sizeof(script), "%s; echo; exec %s -l", cmd,
+				 shell);
+			execl(shell, base, "-c", script, (char *)NULL);
+		} else {
+			execl(shell, login, (char *)NULL);
+		}
 		execl("/bin/sh", "-sh", (char *)NULL);
 		_exit(127);
 	}
@@ -717,7 +725,7 @@ static int spawn_shell(struct term *t)
 	return 0;
 }
 
-void app_terminal(void)
+static void open_terminal(const char *cmd)
 {
 	struct term *t = calloc(1, sizeof(*t));
 	window_t *win;
@@ -741,7 +749,7 @@ void app_terminal(void)
 	win->destroy = term_destroy;
 	t->fd = -1;
 	term_resize(win);
-	if (spawn_shell(t)) {
+	if (spawn_shell(t, cmd)) {
 		const char *msg = "watercandy: cannot start a shell\r\n";
 
 		while (*msg)
@@ -753,4 +761,14 @@ void app_terminal(void)
 
 		ioctl(t->fd, TIOCSWINSZ, &ws);
 	}
+}
+
+void app_terminal(void)
+{
+	open_terminal(NULL);
+}
+
+void app_terminal_cmd(const char *cmd)
+{
+	open_terminal(cmd);
 }

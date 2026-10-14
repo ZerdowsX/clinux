@@ -284,3 +284,87 @@ void icon_app(surface_t *s, float x, float y, float S)
 	stroke_poly(s, pts, 4, S / 64 + 0.6f, &p);
 	aqua_gel_circle(s, PX(0.5f), PY(0.5f), 0.18f * S, 0xff2f7de0);
 }
+
+void icon_globe(surface_t *s, float x, float y, float S)
+{
+	float cx = PX(0.5f), cy = PY(0.5f), R = 0.40f * S;
+	float lw = S / 80 + 0.5f, arc[2 * 66];
+	paint_t p;
+	int i, k, n = 0;
+
+	p = paint_solid(0x50000000);
+	fill_circle(s, cx, cy + 0.03f * S, R + 0.01f * S, &p);
+	p = paint_radial(cx - 0.12f * S, cy - 0.14f * S, R * 1.5f, 0xff8fd3ff,
+			 0xff0a3f9c);
+	fill_circle(s, cx, cy, R, &p);
+
+	/* meridians and parallels */
+	p = paint_solid(0x70ffffff);
+	for (k = 1; k <= 2; k++) {
+		float rx = R * (k == 1 ? 0.38f : 0.75f);
+
+		for (i = 0; i < 32; i++) {
+			float a0 = i * 2 * (float)M_PI / 32, a1 = (i + 1) * 2 * (float)M_PI / 32;
+
+			draw_line(s, cx + rx * sinf(a0), cy - R * cosf(a0) * 0.98f,
+				  cx + rx * sinf(a1), cy - R * cosf(a1) * 0.98f, lw, &p);
+		}
+	}
+	draw_line(s, cx, cy - R, cx, cy + R, lw, &p);
+	for (k = -1; k <= 1; k++) {
+		float yy = cy + k * R * 0.5f;
+		float hw = sqrtf(R * R - (yy - cy) * (yy - cy));
+
+		draw_line(s, cx - hw, yy, cx + hw, yy, lw, &p);
+	}
+	p = paint_solid(0xff0b3478);
+	stroke_circle(s, cx, cy, R, lw * 1.4f, &p);
+
+	/* a warm orange ring sweeping around the globe */
+	for (i = 0; i <= 32; i++) {
+		float a = (float)M_PI * (0.55f + 1.25f * i / 32);
+		float r = R * (1.06f + 0.10f * sinf((float)M_PI * i / 32));
+
+		arc[n++] = cx + r * cosf(a);
+		arc[n++] = cy + r * sinf(a);
+	}
+	for (i = 32; i >= 0; i--) {
+		float a = (float)M_PI * (0.55f + 1.25f * i / 32);
+		float r = R * (0.92f + 0.02f * sinf((float)M_PI * i / 32));
+
+		arc[n++] = cx + r * cosf(a);
+		arc[n++] = cy + r * sinf(a);
+	}
+	p = paint_vgrad(cy - R, cy + R, 0xffffc34a, 0xffe2481b);
+	fill_poly(s, arc, n / 2, &p);
+	p = paint_solid(0xa0902a08);
+	stroke_poly(s, arc, n / 2, lw, &p);
+
+	p = paint_vgrad(cy - R, cy - 0.1f * S, 0xc0ffffff, 0x00ffffff);
+	fill_ellipse(s, cx + 0.03f * S, cy - 0.2f * S, 0.25f * S, 0.15f * S, &p);
+}
+
+void icon_network(surface_t *s, float x, float y, float S, int connected)
+{
+	static const float h[3] = { 0.30f, 0.55f, 0.80f };
+	paint_t p;
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		float bx = PX(0.12f + i * 0.28f), bw = 0.2f * S, bh = h[i] * S;
+		float by = PY(0.9f) - bh;
+
+		if (connected) {
+			p = paint_vgrad(by, by + bh, 0xff3a3a3a, 0xff101010);
+			fill_rrect(s, bx, by, bw, bh, 0.05f * S, &p);
+		} else {
+			p = paint_solid(0xff9a9a9a);
+			stroke_rrect(s, bx, by, bw, bh, 0.05f * S, S / 24 + 0.6f, &p);
+		}
+	}
+	if (!connected) {
+		p = paint_solid(0xffd03a30);
+		draw_line(s, PX(0.1f), PY(0.12f), PX(0.42f), PY(0.44f), S / 10 + 0.5f, &p);
+		draw_line(s, PX(0.42f), PY(0.12f), PX(0.1f), PY(0.44f), S / 10 + 0.5f, &p);
+	}
+}

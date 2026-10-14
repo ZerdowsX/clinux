@@ -2,7 +2,11 @@
 #ifndef WC_INPUT_H
 #define WC_INPUT_H
 
-enum ev_type { EV_MOTION, EV_BUTTON, EV_KEYPRESS, EV_SCROLL };
+/*
+ * EV_KEYRAW reports every key press (pressed=1), repeat (2) and release (0),
+ * including modifiers; EV_KEYPRESS is the translated, press-only form.
+ */
+enum ev_type { EV_MOTION, EV_BUTTON, EV_KEYPRESS, EV_KEYRAW, EV_SCROLL };
 
 #define MOD_SHIFT 1
 #define MOD_CTRL  2

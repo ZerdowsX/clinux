@@ -126,6 +126,13 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 	event_t ev = { .x = ptr_x, .y = ptr_y };
 	int bit = 0;
 
+	if (code < BTN_MISC || code >= KEY_OK) {
+		event_t raw = { .type = EV_KEYRAW, .x = ptr_x, .y = ptr_y,
+				.key = code, .pressed = value, .mods = mods };
+
+		cb(&raw);
+	}
+
 	switch (code) {
 	case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT:
 		bit = MOD_SHIFT;
