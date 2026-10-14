@@ -8,6 +8,7 @@
  * extension, and acts as a minimal window manager inside the X server so
  * the program's main window always fills the Aqua window.
  */
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -85,6 +86,7 @@ void app_firefox(void)
 #ifdef HAVE_X11
 
 #include <X11/Xatom.h>
+#include <X11/cursorfont.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XTest.h>
@@ -154,6 +156,23 @@ static int map_framebuffer(struct xapp *x)
 		return -1;
 	}
 	return 0;
+}
+
+static void update_app_name(window_t *win, struct xapp *x)
+{
+	XClassHint hint = { 0 };
+
+	if (!x->main_win || !XGetClassHint(x->dpy, x->main_win, &hint))
+		return;
+	if (hint.res_class && hint.res_class[0]) {
+		snprintf(win->app_name, sizeof(win->app_name), "%s", hint.res_class);
+		win->app_name[0] = (char)toupper((unsigned char)win->app_name[0]);
+		wm_set_title(win, win->title);	/* refreshes the menu bar */
+	}
+	if (hint.res_name)
+		XFree(hint.res_name);
+	if (hint.res_class)
+		XFree(hint.res_class);
 }
 
 static void update_title(window_t *win, struct xapp *x)
@@ -279,6 +298,9 @@ static void xapp_tick(window_t *win)
 		/* Become the window manager of this X server. */
 		XSelectInput(x->dpy, DefaultRootWindow(x->dpy),
 			     SubstructureRedirectMask | SubstructureNotifyMask);
+		/* An arrow instead of the X server's default "X" pointer. */
+		XDefineCursor(x->dpy, DefaultRootWindow(x->dpy),
+			      XCreateFontCursor(x->dpy, XC_left_ptr));
 		XSync(x->dpy, False);
 		map_framebuffer(x);
 		start_program(x);
@@ -295,6 +317,7 @@ static void xapp_tick(window_t *win)
 		case MapRequest:
 			manage(x, ev.xmaprequest.window, 1);
 			update_title(win, x);
+			update_app_name(win, x);
 			break;
 		case ConfigureRequest: {
 			XConfigureRequestEvent *r = &ev.xconfigurerequest;
@@ -442,8 +465,9 @@ int app_x11(const char *cmd, const char *title, enum app_id app)
 		return -1;
 	}
 	snprintf(x->cmd, sizeof(x->cmd), "exec %s", cmd);
+	/* Leave room for the Dock and the window cascade. */
 	cw = dt.w - 120 > 1100 ? 1100 : dt.w - 120;
-	ch = dt.h - MENUBAR_H - 150 > 760 ? 760 : dt.h - MENUBAR_H - 150;
+	ch = dt.h - MENUBAR_H - 230 > 760 ? 760 : dt.h - MENUBAR_H - 230;
 	x->w = cw & ~7;
 	x->h = ch;
 	snprintf(x->dir, sizeof(x->dir), "/tmp/watercandy-x%d", x->disp);

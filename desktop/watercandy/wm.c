@@ -728,6 +728,13 @@ static enum app_id front_app(void)
 	return dt.focus ? dt.focus->app : APP_NONE;
 }
 
+static const char *front_app_name(void)
+{
+	if (dt.focus && dt.focus->app_name[0])
+		return dt.focus->app_name;
+	return app_names[front_app()];
+}
+
 static struct menu *add_menu(const char *title)
 {
 	struct menu *m = &menus[nmenus++];
@@ -770,9 +777,9 @@ static void build_menus(void)
 	add_item(m, "Restart...", NULL, 1, act_restart);
 	add_item(m, "Shut Down...", NULL, 1, act_shutdown);
 
-	m = add_menu(app_names[app]);
-	snprintf(about_app, sizeof(about_app), "About %s", app_names[app]);
-	snprintf(quit_app, sizeof(quit_app), "Quit %s", app_names[app]);
+	m = add_menu(front_app_name());
+	snprintf(about_app, sizeof(about_app), "About %s", front_app_name());
+	snprintf(quit_app, sizeof(quit_app), "Quit %s", front_app_name());
 	add_item(m, about_app, NULL, 1, act_about);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Preferences...", NULL, 1, act_prefs);

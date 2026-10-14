@@ -37,6 +37,8 @@ struct window {
 	int x, y, w, h;
 	char title[128];
 	enum app_id app;
+	/* Menu bar name for X11 programs, from their WM_CLASS. */
+	char app_name[32];
 
 	surface_t *surf;
 	int dirty;
