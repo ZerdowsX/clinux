@@ -1,0 +1,30 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef WC_INPUT_H
+#define WC_INPUT_H
+
+enum ev_type { EV_MOTION, EV_BUTTON, EV_KEYPRESS, EV_SCROLL };
+
+#define MOD_SHIFT 1
+#define MOD_CTRL  2
+#define MOD_ALT   4
+
+typedef struct event {
+	enum ev_type type;
+	int x, y;		/* pointer position */
+	int button;		/* 1 = left, 2 = right, 3 = middle */
+	int pressed;
+	int key;		/* Linux KEY_* code */
+	unsigned ch;		/* translated character, 0 if none */
+	int mods;
+	int dz;			/* wheel */
+} event_t;
+
+int input_open(int w, int h);
+/* Fill pollfd array; returns count. */
+int input_pollfds(void *pfds, int max);
+/* Read pending input; invokes cb for each event. */
+void input_dispatch(void (*cb)(const event_t *ev));
+void input_get_pointer(int *x, int *y);
+void input_set_pointer(int x, int y);
+
+#endif
