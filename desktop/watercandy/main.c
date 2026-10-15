@@ -261,6 +261,8 @@ int main(int argc, char **argv)
 	fprintf(stderr, "watercandy: %dx%d via %s\n", disp.w, disp.h, disp.name);
 	if (input_open(disp.w, disp.h))
 		fprintf(stderr, "watercandy: warning: no input devices\n");
+	else
+		input_start();
 	init_desktop(disp.w, disp.h);
 	if (user_can_login() && !user_autologin()) {
 		login_start();

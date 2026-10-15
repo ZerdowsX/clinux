@@ -4,7 +4,7 @@
 CC	?= gcc
 CFLAGS	?= -O2 -g
 CFLAGS	+= -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -std=gnu11 -D_GNU_SOURCE
-LDLIBS	+= -lm
+LDLIBS	+= -lm -lpthread
 
 SRCS	:= main.c gfx.c font.c display.c input.c wallpaper.c icons.c aqua.c \
 	   wm.c apps.c terminal.c files.c user.c net.c xapp.c i18n.c entry.c login.c clipboard.c proc.c notify.c store.c sound.c wifi.c image.c textedit.c preview.c spotlight.c installer.c

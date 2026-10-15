@@ -13,6 +13,10 @@
 #define MAX_NETS 16
 
 static struct wifi_net nets[MAX_NETS];
+/* What the open menu shows; clicks refer to this, not to a newer scan. */
+static struct wifi_net shown[MAX_NETS];
+static int nshown;
+static int pending_secure, asked_password;
 static int nnets, present, enabled = 1, scanning;
 static char saved[2048];	/* names of saved connections, '\n' separated */
 static double last_scan = -100;
@@ -30,8 +34,10 @@ int wifi_enabled(void)
 
 int wifi_networks(const struct wifi_net **list)
 {
-	*list = nets;
-	return nnets;
+	memcpy(shown, nets, sizeof(nets));
+	nshown = nnets;
+	*list = shown;
+	return nshown;
 }
 
 /* Split one nmcli terse line on unescaped ':' (SSIDs may contain "\:"). */
@@ -41,11 +47,11 @@ static int split_terse(char *line, char **fields, int max)
 	char *r = line, *w = line;
 
 	fields[n++] = w;
-	while (*r && n < max) {
+	while (*r) {
 		if (r[0] == '\\' && r[1]) {
 			*w++ = r[1];
 			r += 2;
-		} else if (*r == ':') {
+		} else if (*r == ':' && n < max) {
 			*w++ = 0;
 			r++;
 			fields[n++] = w;
@@ -86,7 +92,7 @@ static void got_list(int status, const char *out, void *ctx)
 		nets[nnets].secure = f[3][0] && strcmp(f[3], "--");
 		nnets++;
 	}
-	dt.redraw = 1;
+	wm_menus_changed();
 }
 
 static void got_saved(int status, const char *out, void *ctx)
@@ -96,31 +102,30 @@ static void got_saved(int status, const char *out, void *ctx)
 		snprintf(saved, sizeof(saved), "%s", out);
 }
 
-static void got_devices(int status, const char *out, void *ctx)
+static void got_radio(int status, const char *out, void *ctx)
 {
 	const char *list[] = { "nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY",
 			       "device", "wifi", "list", NULL };
 	const char *conns[] = { "nmcli", "-t", "-f", "NAME", "connection", "show", NULL };
-	const char *radio[] = { "nmcli", "radio", "wifi", NULL };
 
 	(void)ctx;
-	present = !status && strstr(out, ":wifi:") != NULL;
-	if (!present) {
-		scanning = 0;
-		return;
-	}
-	{
-		char *r = proc_capture(radio, 0);
-
-		if (r) {
-			enabled = !strncmp(r, "enabled", 7);
-			free(r);
-		}
-	}
+	enabled = status || strncmp(out, "enabled", 7) == 0;
 	proc_run(conns, 0, got_saved, NULL, NULL);
 	if (enabled)
 		proc_run(list, 0, got_list, NULL, NULL);
 	else
+		scanning = 0;
+}
+
+static void got_devices(int status, const char *out, void *ctx)
+{
+	const char *radio[] = { "nmcli", "radio", "wifi", NULL };
+
+	(void)ctx;
+	if (present != (!status && strstr(out, ":wifi:") != NULL))
+		wm_menus_changed();
+	present = !status && strstr(out, ":wifi:") != NULL;
+	if (!present || proc_run(radio, 0, got_radio, NULL, NULL) < 0)
 		scanning = 0;
 }
 
@@ -142,11 +147,19 @@ void wifi_tick(void)
 		wifi_scan();
 }
 
+static void ask_password(void);
+
 static void connect_done(int status, const char *out, void *ctx)
 {
 	char msg[160];
 
 	(void)ctx;
+	/* A saved network whose password is missing or wrong: ask for it. */
+	if (status && pending_secure && !asked_password &&
+	    (strstr(out, "ecrets") || strstr(out, "assword"))) {
+		ask_password();
+		return;
+	}
 	if (status) {
 		const char *e = strstr(out, "Error:");
 
@@ -186,21 +199,29 @@ static int is_saved(const char *ssid)
 	return 0;
 }
 
-void wifi_connect(int i)
+static void ask_password(void)
 {
 	char msg[160];
 
-	if (i < 0 || i >= nnets)
+	asked_password = 1;
+	snprintf(msg, sizeof(msg), _("The Wi-Fi network \"%s\" requires a password."),
+		 pending_ssid);
+	wc_prompt(_("Join Wi-Fi network"), msg, 1, "Join", connect_with, NULL);
+}
+
+void wifi_connect(int i)
+{
+	if (i < 0 || i >= nshown)
 		return;
-	snprintf(pending_ssid, sizeof(pending_ssid), "%s", nets[i].ssid);
+	snprintf(pending_ssid, sizeof(pending_ssid), "%s", shown[i].ssid);
+	pending_secure = shown[i].secure;
+	asked_password = 0;
 	if (is_saved(pending_ssid)) {
 		const char *argv[] = { "nmcli", "connection", "up", "id", pending_ssid, NULL };
 
 		proc_run(argv, 0, connect_done, NULL, NULL);
-	} else if (nets[i].secure) {
-		snprintf(msg, sizeof(msg), _("The Wi-Fi network \"%s\" requires a password."),
-			 pending_ssid);
-		wc_prompt(_("Join Wi-Fi network"), msg, 1, "Join", connect_with, NULL);
+	} else if (shown[i].secure) {
+		ask_password();
 	} else {
 		const char *argv[] = { "nmcli", "device", "wifi", "connect", pending_ssid, NULL };
 

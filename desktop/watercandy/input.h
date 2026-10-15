@@ -28,6 +28,8 @@ typedef struct event {
 } event_t;
 
 int input_open(int w, int h);
+/* Start reading devices in the background (after input_open). */
+void input_start(void);
 /* Fill pollfd array; returns count. */
 int input_pollfds(void *pfds, int max);
 /* Read pending input; invokes cb for each event. */

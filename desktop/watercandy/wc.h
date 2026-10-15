@@ -312,6 +312,7 @@ struct menu_custom {
 };
 void wm_menu_changed(void);
 void wm_menu_close(void);
+void wm_menus_changed(void);
 void wm_relayout_language(void);
 
 /* user.c - run programs as the desktop user. */

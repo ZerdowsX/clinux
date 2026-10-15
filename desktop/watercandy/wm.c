@@ -1216,6 +1216,14 @@ void wm_menu_changed(void)
 	dt.redraw = 1;
 }
 
+/* Menu contents changed (Wi-Fi networks found...): rebuild them. */
+void wm_menus_changed(void)
+{
+	menubar_dirty = 1;
+	dropdown_dirty = 1;
+	dt.redraw = 1;
+}
+
 void wm_menu_close(void)
 {
 	open_menu_at(-1);

@@ -566,8 +566,8 @@ static void prompt_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	wrap_text(s, fonts[FONT_UI], 12, x + 88, y + 50, w - 110, 16, 0xff303030, p->msg);
 	p->text.focused = 1;
 	entry_draw(s, &p->text, x + 88, y + h - 78, w - 110, 22);
-	aqua_button(s, x + w - 200, y + h - 38, 90, 22, "Cancel", 0, p->pressed == 1);
-	aqua_button(s, x + w - 100, y + h - 38, 84, 22, p->ok, 1, p->pressed == 2);
+	aqua_button(s, x + w - 250, y + h - 38, 100, 22, "Cancel", 0, p->pressed == 1);
+	aqua_button(s, x + w - 140, y + h - 38, 124, 22, p->ok, 1, p->pressed == 2);
 }
 
 static void prompt_mouse(window_t *win, const event_t *ev, int x, int y)
@@ -578,7 +578,7 @@ static void prompt_mouse(window_t *win, const event_t *ev, int x, int y)
 	if (ev->type != EV_BUTTON || ev->button != 1)
 		return;
 	if (y >= ch - 38 && y < ch - 16)
-		b = x >= cw - 200 && x < cw - 110 ? 1 : x >= cw - 100 && x < cw - 16 ? 2 : 0;
+		b = x >= cw - 250 && x < cw - 150 ? 1 : x >= cw - 140 && x < cw - 16 ? 2 : 0;
 	if (ev->pressed) {
 		p->pressed = b;
 	} else {
