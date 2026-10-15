@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -170,12 +171,31 @@ int proc_busy(void)
 /* Run and wait (for short queries); returns malloc'd output or NULL. */
 char *proc_capture(const char *const argv[], int flags)
 {
+	return proc_capture_len(argv, flags, NULL);
+}
+
+/* Read a file as the desktop user; returns malloc'd contents or NULL. */
+char *user_read_file_len(const char *path, size_t *len)
+{
+	const char *argv[] = { "cat", "--", path, NULL };
+	struct stat st;
+
+	if (stat(path, &st) || !S_ISREG(st.st_mode) || st.st_size > 64 << 20)
+		return NULL;
+	if (access("/bin/cat", X_OK) && access("/usr/bin/cat", X_OK))
+		return NULL;
+	return proc_capture_len(argv, PROC_AS_USER | PROC_CHECK, len);
+}
+
+char *proc_capture_len(const char *const argv[], int flags, size_t *out_len)
+{
 	int out[2];
 	pid_t pid;
 	char *buf = NULL;
 	size_t len = 0, cap = 0;
 	char tmp[4096];
 	ssize_t n;
+	int status = 0;
 
 	if (pipe2(out, O_CLOEXEC))
 		return NULL;
@@ -209,11 +229,17 @@ char *proc_capture(const char *const argv[], int flags)
 		len += n;
 	}
 	close(out[0]);
-	while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
 		;
+	if ((flags & PROC_CHECK) && (!WIFEXITED(status) || WEXITSTATUS(status))) {
+		free(buf);
+		return NULL;
+	}
 	if (!buf)
 		buf = calloc(1, 1);
 	else
 		buf[len] = 0;
+	if (out_len)
+		*out_len = len;
 	return buf;
 }

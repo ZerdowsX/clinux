@@ -51,6 +51,12 @@ const char *user_autologin(void)
 {
 	static char name[64];
 	char line[256];
+
+	/* The live system from the ISO logs straight in. */
+	if (!access("/etc/clinux-live", F_OK) && dt.uid) {
+		snprintf(name, sizeof(name), "%s", dt.user);
+		return name;
+	}
 	FILE *f = getenv("WC_AUTOLOGIN") ? NULL : fopen("/etc/watercandy.conf", "r");
 
 	if (getenv("WC_AUTOLOGIN")) {

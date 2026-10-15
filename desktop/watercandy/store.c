@@ -356,7 +356,7 @@ static void auth_destroy(window_t *win)
 }
 
 /* Run next() as root once the user has typed their password. */
-static void with_admin(void (*next)(void))
+void wc_with_admin(void (*next)(void))
 {
 	struct auth *a;
 	window_t *win;
@@ -728,7 +728,7 @@ static void store_click(int hit)
 		return;
 	}
 	if (hit == 1000 && !job.running) {
-		with_admin(upgrade_all);
+		wc_with_admin(upgrade_all);
 		return;
 	}
 	if (hit == 1001) {
@@ -744,10 +744,10 @@ static void store_click(int hit)
 			notify(_("Please wait"), _("Another installation is in progress."), NULL);
 		} else if (catalog[i].installed) {
 			pending_entry = i;
-			with_admin(remove_entry);
+			wc_with_admin(remove_entry);
 		} else if (catalog[i].available) {
 			pending_entry = i;
-			with_admin(install_entry);
+			wc_with_admin(install_entry);
 		}
 	}
 }

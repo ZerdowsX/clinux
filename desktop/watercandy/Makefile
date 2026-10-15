@@ -7,7 +7,7 @@ CFLAGS	+= -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -s
 LDLIBS	+= -lm
 
 SRCS	:= main.c gfx.c font.c display.c input.c wallpaper.c icons.c aqua.c \
-	   wm.c apps.c terminal.c files.c user.c net.c xapp.c i18n.c entry.c login.c clipboard.c proc.c notify.c store.c
+	   wm.c apps.c terminal.c files.c user.c net.c xapp.c i18n.c entry.c login.c clipboard.c proc.c notify.c store.c sound.c wifi.c image.c textedit.c preview.c spotlight.c installer.c
 OBJS	:= $(SRCS:.c=.o)
 
 # The X11 bridge (Firefox and other X programs) needs libX11, libXtst and
@@ -19,6 +19,12 @@ ifneq ($(X11_LIBS),)
 CFLAGS	+= -DHAVE_X11 $(shell pkg-config --cflags x11 xtst xfixes)
 LDLIBS	+= $(X11_LIBS)
 endif
+endif
+
+# Screenshots are compressed with zlib when it is there.
+ifneq ($(wildcard /usr/include/zlib.h),)
+CFLAGS	+= -DHAVE_ZLIB
+LDLIBS	+= -lz
 endif
 
 # The login window authenticates with PAM.

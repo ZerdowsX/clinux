@@ -23,6 +23,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <linux/input-event-codes.h>
+
 #include "display.h"
 #include "wc.h"
 
@@ -184,6 +186,24 @@ static int render_offscreen(int argc, char **argv)
 			app_store(0);
 		else if (!strcmp(argv[i], "notify"))
 			notify("Обновление ПО", "Доступно 3 обновления", NULL);
+		else if (!strncmp(argv[i], "edit:", 5))
+			app_textedit(argv[i] + 5);
+		else if (!strncmp(argv[i], "view:", 5))
+			app_preview(argv[i] + 5);
+		else if (!strncmp(argv[i], "spot:", 5)) {
+			int k;
+
+			event_t ev = { .type = EV_KEYPRESS, .key = KEY_SPACE, .mods = MOD_ALT };
+			wm_event(&ev);
+			for (k = 5; argv[i][k]; ) {
+				const char *p = argv[i] + k;
+				event_t c = { .type = EV_KEYPRESS };
+
+				c.ch = utf8_next(&p);
+				k = p - argv[i];
+				wm_event(&c);
+			}
+		}
 		else if (!strcmp(argv[i], "login"))
 			login_start();
 		else if (!strcmp(argv[i], "menu")) {
@@ -290,6 +310,8 @@ int main(int argc, char **argv)
 		reap_children();
 		proc_tick();
 		updates_tick();
+		sound_tick();
+		wifi_tick();
 
 		if (dt.redraw || wm_animating()) {
 			wm_render();

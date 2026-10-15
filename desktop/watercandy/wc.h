@@ -29,6 +29,9 @@ enum app_id {
 	APP_FIREFOX,
 	APP_ALERT,
 	APP_STORE,
+	APP_TEXTEDIT,
+	APP_PREVIEW,
+	APP_INSTALLER,
 	APP_COUNT
 };
 
@@ -69,6 +72,9 @@ struct window {
 	/* Edit menu: copy the selection to the clipboard / paste it. */
 	void (*copy)(window_t *win);
 	void (*paste)(window_t *win);
+	/* File > Save; edited puts the dot in the close button. */
+	void (*save)(window_t *win);
+	int edited;
 	void *data;
 
 	window_t *next;		/* stacking order, bottom first */
@@ -125,6 +131,7 @@ void icon_app(surface_t *s, float x, float y, float size);
 void icon_globe(surface_t *s, float x, float y, float size);
 void icon_network(surface_t *s, float x, float y, float size, int connected);
 void icon_store(surface_t *s, float x, float y, float size);
+void icon_installer(surface_t *s, float x, float y, float size);
 void icon_flag(surface_t *s, float x, float y, float w, float h, int layout);
 
 /* entry.c - single-line text field. */
@@ -205,6 +212,7 @@ int clip_owner(void);
 #include <sys/types.h>
 #define PROC_AS_USER	1	/* run as the desktop user instead of root */
 #define PROC_STATUS_FD	2	/* give the child an APT status pipe on fd 3 */
+#define PROC_CHECK	4	/* proc_capture: NULL if the command fails */
 typedef void (*proc_done_fn)(int status, const char *output, void *ctx);
 typedef void (*proc_status_fn)(const char *line, void *ctx);
 int proc_run(const char *const argv[], int flags, proc_done_fn done,
@@ -213,6 +221,8 @@ int proc_child_exited(pid_t pid, int status);
 void proc_tick(void);
 int proc_busy(void);
 char *proc_capture(const char *const argv[], int flags);
+char *proc_capture_len(const char *const argv[], int flags, size_t *len);
+char *user_read_file_len(const char *path, size_t *len);
 
 /* notify.c - Growl-style notification banners. */
 void notify(const char *title, const char *text, void (*click)(void));
@@ -225,6 +235,59 @@ void app_store(int updates_tab);
 void updates_check_start(void);
 void updates_tick(void);
 void updates_schedule(double delay);
+
+/* wifi.c - Wi-Fi through NetworkManager. */
+struct wifi_net {
+	char ssid[64];
+	int signal, secure, active;
+};
+int wifi_present(void);
+int wifi_enabled(void);
+int wifi_networks(const struct wifi_net **list);
+void wifi_scan(void);
+void wifi_tick(void);
+void wifi_connect(int i);
+void wifi_toggle(int on);
+int wifi_bars(int signal);
+void icon_wifi(surface_t *s, float x, float y, float size, int bars, uint32_t color);
+
+/* image.c */
+surface_t *image_load(const char *path);
+surface_t *image_load_mem(const unsigned char *data, size_t len);
+int image_save_png(const char *path, const surface_t *s);
+
+/* Documents: TextEdit, Preview, and opening files by their kind. */
+void app_textedit(const char *path);
+void app_preview(const char *path);
+int is_image_file(const char *name);
+void wc_open_file(const char *path);
+void take_screenshot(void);
+
+/* installer.c - installing from the live ISO. */
+int live_system(void);
+void app_installer(void);
+/* Run next() once the user has confirmed with their password. */
+void wc_with_admin(void (*next)(void));
+
+/* spotlight.c */
+extern struct menu_custom spotlight_menu;
+void spotlight_menu_icon(surface_t *s, int x, int w, int on);
+
+/* sound.c - volume. */
+int sound_available(void);
+void sound_tick(void);
+int sound_key(const event_t *ev);
+int sound_osd_active(void);
+void sound_osd_render(surface_t *f);
+void sound_menu_icon(surface_t *s, int x, int w, int on);
+void sound_draw_speaker(surface_t *s, float x, float y, float S, int level,
+			uint32_t color);
+extern const struct menu_custom volume_menu;
+
+/* A dialog asking for one line of text; cb gets NULL on Cancel. */
+void wc_prompt(const char *title, const char *message, int password,
+	       const char *ok_label, void (*cb)(const char *text, void *ctx),
+	       void *ctx);
 
 /* i18n.c - interface language. */
 void i18n_init(void);

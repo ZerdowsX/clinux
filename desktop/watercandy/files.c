@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 #include "wc.h"
@@ -236,13 +237,15 @@ static void files_mouse(window_t *win, const event_t *ev, int x, int y)
 		if (idx >= f->n)
 			idx = -1;
 	}
-	if (idx >= 0 && idx == f->sel && dt.now - f->last_click < 0.5 &&
-	    f->ents[idx].is_dir) {
+	if (idx >= 0 && idx == f->sel && dt.now - f->last_click < 0.5) {
 		char tmp[PATH_MAX + 260];
 
 		snprintf(tmp, sizeof(tmp), "%s/%s", strcmp(f->path, "/") ? f->path : "",
 			 f->ents[idx].name);
-		set_path(win, f, tmp);
+		if (f->ents[idx].is_dir)
+			set_path(win, f, tmp);
+		else
+			wc_open_file(tmp);
 		f->last_click = 0;
 	} else {
 		f->sel = idx;
@@ -259,6 +262,42 @@ static void files_destroy(window_t *win)
 	free(f);
 }
 
+/* Open a file with the application for its kind, like a double click. */
+void wc_open_file(const char *path)
+{
+	static const char *const text_ext[] = { ".txt", ".md", ".c", ".h", ".sh", ".py",
+						".conf", ".cfg", ".ini", ".log", ".json",
+						".xml", ".html", ".css", ".js", ".csv",
+						".desktop", ".list", NULL };
+	const char *name = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+	const char *dot = strrchr(name, '.');
+	struct stat st;
+	int i;
+
+	if (stat(path, &st)) {
+		wc_alert("The item cannot be found", path, NULL, NULL);
+		return;
+	}
+	if (S_ISDIR(st.st_mode)) {
+		app_files(path, NULL);
+		return;
+	}
+	if (is_image_file(name)) {
+		app_preview(path);
+		return;
+	}
+	for (i = 0; dot && text_ext[i]; i++)
+		if (!strcasecmp(dot, text_ext[i])) {
+			app_textedit(path);
+			return;
+		}
+	if (!dot && st.st_size < (1 << 20) && !(st.st_mode & 0111)) {
+		app_textedit(path);	/* README, Makefile, ... */
+		return;
+	}
+	wc_alert("There is no application to open this document", name, NULL, NULL);
+}
+
 void app_files(const char *path, const char *title)
 {
 	struct files *f = calloc(1, sizeof(*f));
@@ -273,7 +312,7 @@ void app_files(const char *path, const char *title)
 		icon_app(ic_exec, 0, 0, ICON);
 	}
 	mkdir(path, 0755);	/* e.g. the Trash folder */
-	win = wm_create(title, APP_FILES, 600, 420);
+	win = wm_create(title ? title : "", APP_FILES, 600, 420);
 	win->resizable = 1;
 	win->min_w = 260;
 	win->min_h = 180;

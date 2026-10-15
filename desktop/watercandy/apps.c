@@ -22,6 +22,9 @@ void app_launch(enum app_id app)
 	case APP_STORE:
 		app_store(0);
 		break;
+	case APP_TEXTEDIT:
+		app_textedit(NULL);
+		break;
 	case APP_TERMINAL:
 		app_terminal();
 		break;
@@ -525,4 +528,123 @@ void wc_alert(const char *title, const char *message, const char *button2,
 	win->mouse = alert_mouse;
 	win->key = alert_key;
 	win->destroy = alert_destroy;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Text prompt                                                            */
+
+struct prompt {
+	char title[128], msg[256], ok[32];
+	entry_t text;
+	void (*cb)(const char *text, void *ctx);
+	void *ctx;
+	int pressed;
+};
+
+static void prompt_finish(window_t *win, int ok)
+{
+	struct prompt *p = win->data;
+	void (*cb)(const char *, void *) = p->cb;
+	char text[sizeof(p->text.text)];
+
+	snprintf(text, sizeof(text), "%s", p->text.text);
+	p->cb = NULL;
+	wm_close(win);
+	if (cb)
+		cb(ok ? text : NULL, p->ctx);
+}
+
+static void prompt_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
+{
+	struct prompt *p = win->data;
+	surface_t *ic = surf_new(52, 52);
+
+	icon_drop(ic, 0, 0, 52);
+	blit(s, ic, x + 20, y + 16, 255);
+	surf_free(ic);
+	draw_text(s, fonts[FONT_UI_BOLD], 14, x + 88, y + 30, 0xff000000, p->title);
+	wrap_text(s, fonts[FONT_UI], 12, x + 88, y + 50, w - 110, 16, 0xff303030, p->msg);
+	p->text.focused = 1;
+	entry_draw(s, &p->text, x + 88, y + h - 78, w - 110, 22);
+	aqua_button(s, x + w - 200, y + h - 38, 90, 22, "Cancel", 0, p->pressed == 1);
+	aqua_button(s, x + w - 100, y + h - 38, 84, 22, p->ok, 1, p->pressed == 2);
+}
+
+static void prompt_mouse(window_t *win, const event_t *ev, int x, int y)
+{
+	struct prompt *p = win->data;
+	int cw = win->w - 2, ch = win->h - TITLE_H - 1, b = 0;
+
+	if (ev->type != EV_BUTTON || ev->button != 1)
+		return;
+	if (y >= ch - 38 && y < ch - 16)
+		b = x >= cw - 200 && x < cw - 110 ? 1 : x >= cw - 100 && x < cw - 16 ? 2 : 0;
+	if (ev->pressed) {
+		p->pressed = b;
+	} else {
+		int was = p->pressed;
+
+		p->pressed = 0;
+		if (b && b == was) {
+			prompt_finish(win, b == 2);
+			return;
+		}
+	}
+	wm_damage(win);
+}
+
+static void prompt_key(window_t *win, const event_t *ev)
+{
+	struct prompt *p = win->data;
+	int r = entry_key(&p->text, ev);
+
+	if (r == ENTRY_ENTER)
+		prompt_finish(win, 1);
+	else if (r == ENTRY_ESCAPE)
+		prompt_finish(win, 0);
+	else
+		wm_damage(win);
+}
+
+static void prompt_tick(window_t *win)
+{
+	static int blink;
+
+	if (blink != (int)(dt.now * 2)) {
+		blink = (int)(dt.now * 2);
+		wm_damage(win);
+	}
+}
+
+static void prompt_destroy(window_t *win)
+{
+	struct prompt *p = win->data;
+
+	if (p->cb)
+		p->cb(NULL, p->ctx);	/* closed with the red button */
+	free(p);
+}
+
+void wc_prompt(const char *title, const char *message, int password,
+	       const char *ok_label, void (*cb)(const char *text, void *ctx),
+	       void *ctx)
+{
+	struct prompt *p = calloc(1, sizeof(*p));
+	window_t *win;
+	int text_h;
+
+	snprintf(p->title, sizeof(p->title), "%s", _(title));
+	snprintf(p->msg, sizeof(p->msg), "%s", _(message));
+	snprintf(p->ok, sizeof(p->ok), "%s", _(ok_label ? ok_label : "OK"));
+	p->text.password = password;
+	p->cb = cb;
+	p->ctx = ctx;
+	text_h = wrap_text(NULL, fonts[FONT_UI], 12, 0, 0, ALERT_W - 110, 16, 0, p->msg);
+	win = wm_create("", APP_ALERT, ALERT_W, TITLE_H + 1 + 56 + text_h + 90);
+	win->data = p;
+	win->draw = prompt_draw;
+	win->mouse = prompt_mouse;
+	win->key = prompt_key;
+	win->tick = prompt_tick;
+	win->destroy = prompt_destroy;
 }

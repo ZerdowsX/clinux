@@ -12,6 +12,9 @@ OUT=${OUT:-$SRC/desktop/out}
 DISTRO=${DISTRO:-debian}		# debian | ubuntu
 DESKTOP=${DESKTOP:-watercandy}		# watercandy | xfce
 FIREFOX=${FIREFOX:-1}			# install Firefox with APT
+FIRMWARE=${FIRMWARE:-1}			# Wi-Fi and other device firmware
+LOCALE=${LOCALE:-ru_RU.UTF-8}
+TIMEZONE=${TIMEZONE:-Europe/Moscow}
 SIZE=${SIZE:-8G}
 USER_NAME=${USER_NAME:-user}
 USER_PASS=${USER_PASS:-user}
@@ -95,12 +98,14 @@ cat > "$MNT/etc/hosts" <<EOF
 127.0.1.1 clinux
 ::1 localhost ip6-localhost ip6-loopback
 EOF
-echo "LANG=C.UTF-8" > "$MNT/etc/default/locale"
+echo "LANG=$LOCALE" > "$MNT/etc/default/locale"
 
 if [ "$DESKTOP" = watercandy ]; then
-	DESKTOP_PKGS="xvfb x11-xkb-utils xauth libx11-6 libxtst6 \
-		fonts-dejavu-core fonts-freefont-ttf fonts-liberation"
-	BUILD_PKGS="build-essential pkg-config libx11-dev libxtst-dev"
+	DESKTOP_PKGS="xvfb x11-xkb-utils xauth libx11-6 libxtst6 libxfixes3 \
+		fonts-dejavu-core fonts-freefont-ttf fonts-liberation \
+		pipewire pipewire-pulse wireplumber alsa-utils dbus-user-session"
+	BUILD_PKGS="build-essential pkg-config libx11-dev libxtst-dev \
+		libxfixes-dev libpam0g-dev"
 else
 	DESKTOP_PKGS="xserver-xorg-core xserver-xorg-input-libinput xinit \
 		x11-xserver-utils xfce4 xfce4-terminal lightdm lightdm-gtk-greeter \
@@ -112,9 +117,24 @@ chroot "$MNT" /bin/sh -eu <<CHROOT
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-	network-manager iproute2 iputils-ping wget curl gnupg \
+	network-manager wpasupplicant iw wireless-regdb \
+	grub-efi-amd64-bin grub-pc-bin grub-common dosfstools fdisk \
+	iproute2 iputils-ping wget curl gnupg tzdata kmod \
 	sudo less nano bash-completion locales \
 	$DESKTOP_PKGS $BUILD_PKGS $EXTRA_PACKAGES
+
+sed -i -e 's/^# *\(ru_RU.UTF-8\)/\1/' -e 's/^# *\(en_US.UTF-8\)/\1/' \
+	/etc/locale.gen 2>/dev/null || true
+grep -q '^ru_RU.UTF-8' /etc/locale.gen 2>/dev/null || echo 'ru_RU.UTF-8 UTF-8' >> /etc/locale.gen
+grep -q '^en_US.UTF-8' /etc/locale.gen 2>/dev/null || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+# Ubuntu takes the locales as arguments, Debian reads /etc/locale.gen.
+if [ -d /var/lib/locales/supported.d ]; then
+	locale-gen ru_RU.UTF-8 en_US.UTF-8
+else
+	locale-gen
+fi
+ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+echo $TIMEZONE > /etc/timezone
 
 useradd -m -s /bin/bash -G sudo,video,audio,input "$USER_NAME"
 echo "$USER_NAME:$USER_PASS" | chpasswd
@@ -131,7 +151,41 @@ plugins=keyfile
 managed=true
 NM
 systemctl enable NetworkManager
+
+# Keep the user's systemd instance running so PipeWire (sound) and the
+# session D-Bus are there for the programs Water Candy starts.
+mkdir -p /var/lib/systemd/linger
+touch /var/lib/systemd/linger/$USER_NAME
+
+# The Water Candy login window authenticates through PAM.
+cat > /etc/pam.d/watercandy <<PAM
+@include common-auth
+@include common-account
+PAM
 CHROOT
+
+if [ "$FIRMWARE" = 1 ]; then
+	if [ "$DISTRO" = debian ]; then
+		FW="firmware-iwlwifi firmware-realtek firmware-atheros \
+			firmware-brcm80211 firmware-mediatek firmware-misc-nonfree"
+	else
+		FW="linux-firmware"
+	fi
+	# shellcheck disable=SC2086
+	chroot "$MNT" env DEBIAN_FRONTEND=noninteractive \
+		apt-get install -y --no-install-recommends $FW ||
+		echo "WARNING: some firmware packages could not be installed" >&2
+fi
+
+# The kernel and its modules (Wi-Fi drivers) from build-kernel.sh.
+if [ -d "$OUT/modroot/lib/modules" ]; then
+	mkdir -p "$MNT/lib/modules"
+	cp -a "$OUT/modroot/lib/modules/." "$MNT/lib/modules/"
+fi
+if [ -f "$OUT/bzImage" ]; then
+	mkdir -p "$MNT/boot"
+	cp "$OUT/bzImage" "$MNT/boot/vmlinuz-clinux"
+fi
 
 if [ "$FIREFOX" = 1 ]; then
 	# Firefox from Mozilla's own APT repository (a real .deb, no snap).
@@ -163,6 +217,9 @@ CHROOT
 	fi
 fi
 
+# Installer used from the live ISO (build-iso.sh).
+install -D -m 755 "$SRC/desktop/wc-install" "$MNT/usr/local/sbin/wc-install"
+
 if [ "$DESKTOP" = watercandy ]; then
 	mkdir -p "$MNT/usr/local/src"
 	rm -rf "$MNT/usr/local/src/watercandy"
@@ -178,6 +235,7 @@ After=systemd-user-sessions.service systemd-logind.service NetworkManager.servic
 Conflicts=getty@tty1.service
 
 [Service]
+EnvironmentFile=-/etc/default/locale
 ExecStart=/usr/local/bin/watercandy
 Restart=always
 RestartSec=1

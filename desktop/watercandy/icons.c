@@ -408,3 +408,45 @@ void icon_store(surface_t *s, float x, float y, float S)
 	p = paint_vgrad(PY(0.1f), PY(0.5f), 0x90ffffff, 0x00ffffff);
 	fill_ellipse(s, cx, PY(0.3f), 0.28f * S, 0.16f * S, &p);
 }
+
+/* Wi-Fi fan: bars 0..4 of signal; 0 draws the arcs dimmed. */
+void icon_wifi(surface_t *s, float x, float y, float S, int bars, uint32_t color)
+{
+	float cx = x + S / 2, cy = y + S * 0.85f;
+	int i, k;
+
+	for (i = 1; i <= 3; i++) {
+		float r = S * (0.22f + 0.2f * i);
+		paint_t p = paint_solid(i < bars ? color : ALPHA(color, 0x50));
+
+		for (k = 0; k < 10; k++) {
+			float a0 = -2.36f + 1.57f * k / 10, a1 = -2.36f + 1.57f * (k + 1) / 10;
+
+			draw_line(s, cx + r * cosf(a0), cy + r * sinf(a0), cx + r * cosf(a1),
+				  cy + r * sinf(a1), S / 9, &p);
+		}
+	}
+	{
+		paint_t p = paint_solid(bars ? color : ALPHA(color, 0x50));
+
+		fill_circle(s, cx, cy - S * 0.05f, S / 10, &p);
+	}
+}
+
+/* An install box: a drop over an open package. */
+void icon_installer(surface_t *s, float x, float y, float S)
+{
+	float box[] = { PX(0.12f), PY(0.45f), PX(0.88f), PY(0.45f), PX(0.82f),
+			PY(0.92f), PX(0.18f), PY(0.92f) };
+	paint_t p;
+
+	p = paint_solid(0x50000000);
+	fill_ellipse(s, PX(0.5f), PY(0.93f), 0.36f * S, 0.05f * S, &p);
+	p = paint_vgrad(PY(0.45f), PY(0.92f), 0xffe9c98a, 0xffb98a45);
+	fill_poly(s, box, 4, &p);
+	p = paint_solid(0xff7a5420);
+	stroke_poly(s, box, 4, S / 48 + 0.6f, &p);
+	p = paint_vgrad(PY(0.4f), PY(0.5f), 0xfff3dcaa, 0xffd8ad62);
+	fill_rrect(s, PX(0.08f), PY(0.40f), 0.84f * S, 0.1f * S, 0.02f * S, &p);
+	icon_drop(s, PX(0.24f), PY(0.0f), 0.52f * S);
+}
