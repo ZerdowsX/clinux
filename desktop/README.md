@@ -111,6 +111,14 @@ MediaTek и Broadcom (их прошивки ставятся при сборке
 
 ## Загрузочная флешка и установка на компьютер
 
+Готовый ISO собирается автоматически на серверах GitHub (workflow
+`.github/workflows/build-iso.yml`): после каждого изменения в `master` его
+можно скачать со страницы релиза **latest-iso** в репозитории (вкладка
+Releases), а для PR — в разделе Artifacts запуска на вкладке Actions.
+Собрать вручную: Actions → Build ISO → Run workflow.
+
+Или соберите сами:
+
     sudo apt install grub-pc-bin grub-efi-amd64-bin xorriso mtools \
                      squashfs-tools busybox-static cpio
     ./desktop/build-kernel.sh
