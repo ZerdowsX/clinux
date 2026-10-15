@@ -284,3 +284,169 @@ void icon_app(surface_t *s, float x, float y, float S)
 	stroke_poly(s, pts, 4, S / 64 + 0.6f, &p);
 	aqua_gel_circle(s, PX(0.5f), PY(0.5f), 0.18f * S, 0xff2f7de0);
 }
+
+void icon_globe(surface_t *s, float x, float y, float S)
+{
+	float cx = PX(0.5f), cy = PY(0.5f), R = 0.40f * S;
+	float lw = S / 80 + 0.5f, arc[2 * 66];
+	paint_t p;
+	int i, k, n = 0;
+
+	p = paint_solid(0x50000000);
+	fill_circle(s, cx, cy + 0.03f * S, R + 0.01f * S, &p);
+	p = paint_radial(cx - 0.12f * S, cy - 0.14f * S, R * 1.5f, 0xff8fd3ff,
+			 0xff0a3f9c);
+	fill_circle(s, cx, cy, R, &p);
+
+	/* meridians and parallels */
+	p = paint_solid(0x70ffffff);
+	for (k = 1; k <= 2; k++) {
+		float rx = R * (k == 1 ? 0.38f : 0.75f);
+
+		for (i = 0; i < 32; i++) {
+			float a0 = i * 2 * (float)M_PI / 32, a1 = (i + 1) * 2 * (float)M_PI / 32;
+
+			draw_line(s, cx + rx * sinf(a0), cy - R * cosf(a0) * 0.98f,
+				  cx + rx * sinf(a1), cy - R * cosf(a1) * 0.98f, lw, &p);
+		}
+	}
+	draw_line(s, cx, cy - R, cx, cy + R, lw, &p);
+	for (k = -1; k <= 1; k++) {
+		float yy = cy + k * R * 0.5f;
+		float hw = sqrtf(R * R - (yy - cy) * (yy - cy));
+
+		draw_line(s, cx - hw, yy, cx + hw, yy, lw, &p);
+	}
+	p = paint_solid(0xff0b3478);
+	stroke_circle(s, cx, cy, R, lw * 1.4f, &p);
+
+	/* a warm orange ring sweeping around the globe */
+	for (i = 0; i <= 32; i++) {
+		float a = (float)M_PI * (0.55f + 1.25f * i / 32);
+		float r = R * (1.06f + 0.10f * sinf((float)M_PI * i / 32));
+
+		arc[n++] = cx + r * cosf(a);
+		arc[n++] = cy + r * sinf(a);
+	}
+	for (i = 32; i >= 0; i--) {
+		float a = (float)M_PI * (0.55f + 1.25f * i / 32);
+		float r = R * (0.92f + 0.02f * sinf((float)M_PI * i / 32));
+
+		arc[n++] = cx + r * cosf(a);
+		arc[n++] = cy + r * sinf(a);
+	}
+	p = paint_vgrad(cy - R, cy + R, 0xffffc34a, 0xffe2481b);
+	fill_poly(s, arc, n / 2, &p);
+	p = paint_solid(0xa0902a08);
+	stroke_poly(s, arc, n / 2, lw, &p);
+
+	p = paint_vgrad(cy - R, cy - 0.1f * S, 0xc0ffffff, 0x00ffffff);
+	fill_ellipse(s, cx + 0.03f * S, cy - 0.2f * S, 0.25f * S, 0.15f * S, &p);
+}
+
+void icon_network(surface_t *s, float x, float y, float S, int connected)
+{
+	static const float h[3] = { 0.30f, 0.55f, 0.80f };
+	paint_t p;
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		float bx = PX(0.12f + i * 0.28f), bw = 0.2f * S, bh = h[i] * S;
+		float by = PY(0.9f) - bh;
+
+		if (connected) {
+			p = paint_vgrad(by, by + bh, 0xff3a3a3a, 0xff101010);
+			fill_rrect(s, bx, by, bw, bh, 0.05f * S, &p);
+		} else {
+			p = paint_solid(0xff9a9a9a);
+			stroke_rrect(s, bx, by, bw, bh, 0.05f * S, S / 24 + 0.6f, &p);
+		}
+	}
+	if (!connected) {
+		p = paint_solid(0xffd03a30);
+		draw_line(s, PX(0.1f), PY(0.12f), PX(0.42f), PY(0.44f), S / 10 + 0.5f, &p);
+		draw_line(s, PX(0.42f), PY(0.12f), PX(0.1f), PY(0.44f), S / 10 + 0.5f, &p);
+	}
+}
+
+void icon_flag(surface_t *s, float x, float y, float w, float h, int layout)
+{
+	paint_t p;
+	int i;
+
+	if (layout == LAYOUT_RU) {
+		fill_rect(s, (int)x, (int)y, (int)w, (int)(h / 3), 0xffffffff);
+		fill_rect(s, (int)x, (int)(y + h / 3), (int)w, (int)(h / 3), 0xff1c48c8);
+		fill_rect(s, (int)x, (int)(y + 2 * h / 3), (int)w, (int)(h - 2 * (int)(h / 3)),
+			  0xffd52b1e);
+	} else {
+		for (i = 0; i < 6; i++)
+			fill_rect(s, (int)x, (int)(y + i * h / 6), (int)w,
+				  (int)((i + 1) * h / 6) - (int)(i * h / 6),
+				  i & 1 ? 0xffffffff : 0xffc8262f);
+		fill_rect(s, (int)x, (int)y, (int)(w * 0.45f), (int)(h * 0.55f), 0xff2a3c8c);
+	}
+	p = paint_vgrad(y, y + h, 0x70ffffff, 0x00ffffff);
+	fill_rect_paint(s, (int)x, (int)y, (int)w, (int)(h / 2), &p);
+	p = paint_solid(0x80000000);
+	stroke_rrect(s, x, y, w, h, 1.5f, 1, &p);
+}
+
+void icon_store(surface_t *s, float x, float y, float S)
+{
+	float cx = PX(0.5f), cy = PY(0.5f);
+	paint_t p;
+
+	p = paint_solid(0x50000000);
+	fill_circle(s, cx, cy + 0.03f * S, 0.43f * S, &p);
+	aqua_gel_circle(s, cx, cy, 0.42f * S, 0xff1e7ef0);
+	/* a pencil, a brush and a ruler forming an "A" */
+	p = paint_solid(0xffffffff);
+	draw_line(s, PX(0.32f), PY(0.72f), PX(0.5f), PY(0.26f), 0.075f * S, &p);
+	draw_line(s, PX(0.68f), PY(0.72f), PX(0.5f), PY(0.26f), 0.075f * S, &p);
+	draw_line(s, PX(0.36f), PY(0.56f), PX(0.64f), PY(0.56f), 0.06f * S, &p);
+	p = paint_vgrad(PY(0.1f), PY(0.5f), 0x90ffffff, 0x00ffffff);
+	fill_ellipse(s, cx, PY(0.3f), 0.28f * S, 0.16f * S, &p);
+}
+
+/* Wi-Fi fan: bars 0..4 of signal; 0 draws the arcs dimmed. */
+void icon_wifi(surface_t *s, float x, float y, float S, int bars, uint32_t color)
+{
+	float cx = x + S / 2, cy = y + S * 0.85f;
+	int i, k;
+
+	for (i = 1; i <= 3; i++) {
+		float r = S * (0.22f + 0.2f * i);
+		paint_t p = paint_solid(i < bars ? color : ALPHA(color, 0x50));
+
+		for (k = 0; k < 10; k++) {
+			float a0 = -2.36f + 1.57f * k / 10, a1 = -2.36f + 1.57f * (k + 1) / 10;
+
+			draw_line(s, cx + r * cosf(a0), cy + r * sinf(a0), cx + r * cosf(a1),
+				  cy + r * sinf(a1), S / 9, &p);
+		}
+	}
+	{
+		paint_t p = paint_solid(bars ? color : ALPHA(color, 0x50));
+
+		fill_circle(s, cx, cy - S * 0.05f, S / 10, &p);
+	}
+}
+
+/* An install box: a drop over an open package. */
+void icon_installer(surface_t *s, float x, float y, float S)
+{
+	float box[] = { PX(0.12f), PY(0.45f), PX(0.88f), PY(0.45f), PX(0.82f),
+			PY(0.92f), PX(0.18f), PY(0.92f) };
+	paint_t p;
+
+	p = paint_solid(0x50000000);
+	fill_ellipse(s, PX(0.5f), PY(0.93f), 0.36f * S, 0.05f * S, &p);
+	p = paint_vgrad(PY(0.45f), PY(0.92f), 0xffe9c98a, 0xffb98a45);
+	fill_poly(s, box, 4, &p);
+	p = paint_solid(0xff7a5420);
+	stroke_poly(s, box, 4, S / 48 + 0.6f, &p);
+	p = paint_vgrad(PY(0.4f), PY(0.5f), 0xfff3dcaa, 0xffd8ad62);
+	fill_rrect(s, PX(0.08f), PY(0.40f), 0.84f * S, 0.1f * S, 0.02f * S, &p);
+	icon_drop(s, PX(0.24f), PY(0.0f), 0.52f * S);
+}

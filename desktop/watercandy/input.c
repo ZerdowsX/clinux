@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -26,6 +27,7 @@ struct dev {
 static struct dev devs[MAX_DEV];
 static int ndevs;
 static int scr_w, scr_h, ptr_x, ptr_y, mods;
+static int wake[2] = { -1, -1 };	/* reader thread -> main loop */
 
 /* US layout: plain and shifted characters for KEY_* codes. */
 static const char keymap[2][KEY_SPACE + 1] = {
@@ -40,6 +42,52 @@ static const char keymap[2][KEY_SPACE + 1] = {
 	  '"', '~', 0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>',
 	  '?', 0, '*', 0, ' ' },
 };
+
+/* Russian (JCUKEN) layout, as Unicode code points; 0 = same as US. */
+static const unsigned short keymap_ru[2][KEY_SPACE + 1] = {
+	[0] = {
+		[KEY_GRAVE] = 0x451,
+		[KEY_Q] = 0x439, [KEY_W] = 0x446, [KEY_E] = 0x443, [KEY_R] = 0x43a,
+		[KEY_T] = 0x435, [KEY_Y] = 0x43d, [KEY_U] = 0x433, [KEY_I] = 0x448,
+		[KEY_O] = 0x449, [KEY_P] = 0x437, [KEY_LEFTBRACE] = 0x445,
+		[KEY_RIGHTBRACE] = 0x44a,
+		[KEY_A] = 0x444, [KEY_S] = 0x44b, [KEY_D] = 0x432, [KEY_F] = 0x430,
+		[KEY_G] = 0x43f, [KEY_H] = 0x440, [KEY_J] = 0x43e, [KEY_K] = 0x43b,
+		[KEY_L] = 0x434, [KEY_SEMICOLON] = 0x436, [KEY_APOSTROPHE] = 0x44d,
+		[KEY_Z] = 0x44f, [KEY_X] = 0x447, [KEY_C] = 0x441, [KEY_V] = 0x43c,
+		[KEY_B] = 0x438, [KEY_N] = 0x442, [KEY_M] = 0x44c,
+		[KEY_COMMA] = 0x431, [KEY_DOT] = 0x44e, [KEY_SLASH] = '.',
+	},
+	[1] = {
+		[KEY_GRAVE] = 0x401, [KEY_2] = '"', [KEY_3] = 0x2116, [KEY_4] = ';',
+		[KEY_6] = ':', [KEY_7] = '?',
+		[KEY_Q] = 0x419, [KEY_W] = 0x426, [KEY_E] = 0x423, [KEY_R] = 0x41a,
+		[KEY_T] = 0x415, [KEY_Y] = 0x41d, [KEY_U] = 0x413, [KEY_I] = 0x428,
+		[KEY_O] = 0x429, [KEY_P] = 0x417, [KEY_LEFTBRACE] = 0x425,
+		[KEY_RIGHTBRACE] = 0x42a,
+		[KEY_A] = 0x424, [KEY_S] = 0x42b, [KEY_D] = 0x412, [KEY_F] = 0x410,
+		[KEY_G] = 0x41f, [KEY_H] = 0x420, [KEY_J] = 0x41e, [KEY_K] = 0x41b,
+		[KEY_L] = 0x414, [KEY_SEMICOLON] = 0x416, [KEY_APOSTROPHE] = 0x42d,
+		[KEY_BACKSLASH] = '/',
+		[KEY_Z] = 0x42f, [KEY_X] = 0x427, [KEY_C] = 0x421, [KEY_V] = 0x41c,
+		[KEY_B] = 0x418, [KEY_N] = 0x422, [KEY_M] = 0x42c,
+		[KEY_COMMA] = 0x411, [KEY_DOT] = 0x42e, [KEY_SLASH] = ',',
+	},
+};
+
+static int layout;
+/* Alt+Shift pressed together and released with no other key between. */
+static int switch_armed;
+
+int input_layout(void)
+{
+	return layout;
+}
+
+void input_set_layout(int l)
+{
+	layout = l % LAYOUT_COUNT;
+}
 
 int input_open(int w, int h)
 {
@@ -88,13 +136,12 @@ int input_open(int w, int h)
 int input_pollfds(void *p, int max)
 {
 	struct pollfd *pfds = p;
-	int i;
 
-	for (i = 0; i < ndevs && i < max; i++) {
-		pfds[i].fd = devs[i].fd;
-		pfds[i].events = POLLIN;
-	}
-	return i;
+	if (wake[0] < 0 || max < 1)
+		return 0;
+	pfds[0].fd = wake[0];
+	pfds[0].events = POLLIN;
+	return 1;
 }
 
 void input_get_pointer(int *x, int *y)
@@ -126,6 +173,13 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 	event_t ev = { .x = ptr_x, .y = ptr_y };
 	int bit = 0;
 
+	if (code < BTN_MISC || code >= KEY_OK) {
+		event_t raw = { .type = EV_KEYRAW, .x = ptr_x, .y = ptr_y,
+				.key = code, .pressed = value, .mods = mods };
+
+		cb(&raw);
+	}
+
 	switch (code) {
 	case KEY_LEFTSHIFT: case KEY_RIGHTSHIFT:
 		bit = MOD_SHIFT;
@@ -138,12 +192,25 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 		break;
 	}
 	if (bit) {
-		if (value)
+		if (value == 1) {
 			mods |= bit;
-		else
+			if ((mods & (MOD_ALT | MOD_SHIFT)) == (MOD_ALT | MOD_SHIFT) &&
+			    !(mods & MOD_CTRL))
+				switch_armed = 1;
+		} else if (value == 0) {
+			if (switch_armed && (bit == MOD_ALT || bit == MOD_SHIFT)) {
+				event_t sw = { .type = EV_LAYOUT, .x = ptr_x, .y = ptr_y };
+
+				layout = (layout + 1) % LAYOUT_COUNT;
+				cb(&sw);
+			}
+			switch_armed = 0;
 			mods &= ~bit;
+		}
 		return;
 	}
+	if (value == 1)
+		switch_armed = 0;
 
 	if (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE ||
 	    code == BTN_TOUCH) {
@@ -161,8 +228,15 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 	ev.type = EV_KEYPRESS;
 	ev.key = code;
 	ev.mods = mods;
-	if (code <= KEY_SPACE)
-		ev.ch = (unsigned char)keymap[(mods & MOD_SHIFT) ? 1 : 0][code];
+	if (code <= KEY_SPACE) {
+		int shift = (mods & MOD_SHIFT) ? 1 : 0;
+
+		ev.ch = (unsigned char)keymap[shift][code];
+		/* Shortcuts (Ctrl, Alt) always use the Latin letters. */
+		if (layout == LAYOUT_RU && !(mods & (MOD_CTRL | MOD_ALT)) &&
+		    keymap_ru[shift][code])
+			ev.ch = keymap_ru[shift][code];
+	}
 	if (code == KEY_KPENTER)
 		ev.ch = '\r';
 	if ((mods & MOD_CTRL) && ev.ch >= 'a' && ev.ch <= 'z')
@@ -172,66 +246,126 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 	cb(&ev);
 }
 
-void input_dispatch(void (*cb)(const event_t *ev))
+/*
+ * A reader thread drains the devices into a large queue as soon as events
+ * arrive, so nothing is lost while the desktop is busy drawing (the
+ * kernel's per-device buffer only holds a few dozen events).
+ */
+#define QUEUE_LEN 8192
+
+struct queued {
+	int dev;
+	struct input_event e;
+};
+
+static struct queued queue[QUEUE_LEN];
+static unsigned q_head, q_tail;
+static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *reader(void *arg)
 {
+	struct pollfd pfds[MAX_DEV];
 	int i;
 
+	(void)arg;
 	for (i = 0; i < ndevs; i++) {
-		struct input_event ie[64];
-		ssize_t n;
-		int moved = 0, k;
+		pfds[i].fd = devs[i].fd;
+		pfds[i].events = POLLIN;
+	}
+	for (;;) {
+		if (poll(pfds, ndevs, -1) < 0)
+			continue;
+		for (i = 0; i < ndevs; i++) {
+			struct input_event ie[64];
+			ssize_t n;
+			int k;
 
-		while ((n = read(devs[i].fd, ie, sizeof(ie))) > 0) {
-			for (k = 0; k < (int)(n / sizeof(ie[0])); k++) {
-				struct input_event *e = &ie[k];
-				struct dev *d = &devs[i];
-
-				if (e->type == EV_REL && e->code == REL_X) {
-					ptr_x += e->value;
-					moved = 1;
-				} else if (e->type == EV_REL && e->code == REL_Y) {
-					ptr_y += e->value;
-					moved = 1;
-				} else if (e->type == EV_REL && e->code == REL_WHEEL) {
-					event_t ev = { .type = EV_SCROLL, .x = ptr_x,
-						       .y = ptr_y, .dz = e->value };
-					cb(&ev);
-				} else if (e->type == EV_ABS &&
-					   (e->code == ABS_X || e->code == ABS_Y)) {
-					int a = e->code == ABS_Y;
-					int range = d->abs_max[a] - d->abs_min[a];
-					int span = a ? scr_h : scr_w;
-
-					if (range > 0) {
-						int v = (int)((long long)(e->value - d->abs_min[a]) *
-							      (span - 1) / range);
-						if (a)
-							ptr_y = v;
-						else
-							ptr_x = v;
-						moved = 1;
-					}
-				} else if (e->type == EV_KEY) {
-					if (moved) {
-						event_t ev = { .type = EV_MOTION };
-
-						clamp_ptr();
-						ev.x = ptr_x;
-						ev.y = ptr_y;
-						cb(&ev);
-						moved = 0;
-					}
-					key_event(e->code, e->value, cb);
-				} else if (e->type == EV_SYN && moved) {
-					event_t ev = { .type = EV_MOTION };
-
-					clamp_ptr();
-					ev.x = ptr_x;
-					ev.y = ptr_y;
-					cb(&ev);
-					moved = 0;
+			if (!(pfds[i].revents & POLLIN))
+				continue;
+			while ((n = read(devs[i].fd, ie, sizeof(ie))) > 0) {
+				pthread_mutex_lock(&q_lock);
+				for (k = 0; k < (int)(n / sizeof(ie[0])); k++) {
+					if (q_tail - q_head == QUEUE_LEN)
+						q_head++;	/* drop the oldest */
+					queue[q_tail % QUEUE_LEN].dev = i;
+					queue[q_tail % QUEUE_LEN].e = ie[k];
+					q_tail++;
 				}
+				pthread_mutex_unlock(&q_lock);
 			}
 		}
+		if (write(wake[1], "", 1) < 0) {
+			/* the pipe is full: the main loop is awake anyway */
+		}
 	}
+	return NULL;
+}
+
+void input_start(void)
+{
+	pthread_t t;
+
+	if (pipe2(wake, O_CLOEXEC | O_NONBLOCK))
+		return;
+	pthread_create(&t, NULL, reader, NULL);
+	pthread_detach(t);
+}
+
+static void handle(struct dev *d, const struct input_event *e, int *moved,
+		   void (*cb)(const event_t *ev))
+{
+	if (e->type == EV_REL && e->code == REL_X) {
+		ptr_x += e->value;
+		*moved = 1;
+	} else if (e->type == EV_REL && e->code == REL_Y) {
+		ptr_y += e->value;
+		*moved = 1;
+	} else if (e->type == EV_REL && e->code == REL_WHEEL) {
+		event_t ev = { .type = EV_SCROLL, .x = ptr_x, .y = ptr_y, .dz = e->value };
+
+		cb(&ev);
+	} else if (e->type == EV_ABS && (e->code == ABS_X || e->code == ABS_Y)) {
+		int a = e->code == ABS_Y;
+		int range = d->abs_max[a] - d->abs_min[a];
+		int span = a ? scr_h : scr_w;
+
+		if (range > 0) {
+			int v = (int)((long long)(e->value - d->abs_min[a]) * (span - 1) / range);
+
+			if (a)
+				ptr_y = v;
+			else
+				ptr_x = v;
+			*moved = 1;
+		}
+	} else if (e->type == EV_KEY || (e->type == EV_SYN && *moved)) {
+		if (*moved) {
+			event_t ev = { .type = EV_MOTION };
+
+			clamp_ptr();
+			ev.x = ptr_x;
+			ev.y = ptr_y;
+			cb(&ev);
+			*moved = 0;
+		}
+		if (e->type == EV_KEY)
+			key_event(e->code, e->value, cb);
+	}
+}
+
+void input_dispatch(void (*cb)(const event_t *ev))
+{
+	static struct queued batch[QUEUE_LEN];
+	char drain[64];
+	unsigned n = 0, i;
+	int moved = 0;
+
+	while (read(wake[0], drain, sizeof(drain)) > 0)
+		;
+	pthread_mutex_lock(&q_lock);
+	while (q_head != q_tail)
+		batch[n++] = queue[q_head++ % QUEUE_LEN];
+	pthread_mutex_unlock(&q_lock);
+	for (i = 0; i < n; i++)
+		handle(&devs[batch[i].dev], &batch[i].e, &moved, cb);
 }

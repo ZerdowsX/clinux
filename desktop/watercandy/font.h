@@ -31,5 +31,7 @@ void font_vmetrics(font_t *f, float size, int *ascent, int *descent);
 
 /* Decode one UTF-8 code point and advance *s. */
 unsigned utf8_next(const char **s);
+/* Encode a code point as UTF-8 into out (at least 5 bytes); returns length. */
+int utf8_encode(unsigned cp, char *out);
 
 #endif

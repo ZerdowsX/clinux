@@ -6,7 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
+
+#include <linux/input-event-codes.h>
 
 #include "wc.h"
 
@@ -21,18 +25,26 @@ struct mitem {
 	int enabled;
 	void (*act)(void);
 	window_t *win;
+	void (*act_i)(int);	/* used instead of act when set */
+	int arg;
+	int checked;
 };
 
-#define MAX_MENUS	8
-#define MAX_ITEMS	24
+#define MAX_MENUS	16
+#define MAX_ITEMS	32
 #define ITEM_H		20
 #define SEP_H		10
+
+enum extra_kind { EXTRA_NONE, EXTRA_SPOTLIGHT, EXTRA_CLOCK, EXTRA_LAYOUT,
+		  EXTRA_VOLUME, EXTRA_NETWORK };
 
 struct menu {
 	const char *title;
 	int x, w;
 	struct mitem items[MAX_ITEMS];
 	int n;
+	enum extra_kind extra;	/* right-side status item */
+	const struct menu_custom *custom;
 };
 
 static struct menu menus[MAX_MENUS];
@@ -42,6 +54,10 @@ static int dd_x, dd_y, dd_w, dd_h;
 static surface_t *menubar_surf, *dropdown_surf, *dropdown_shadow;
 static int menubar_dirty = 1, dropdown_dirty;
 static char menubar_clock[64];
+static struct net_status net;
+static surface_t *net_icon[2];
+/* Draws status icons that live in other modules (volume, Spotlight). */
+static void extra_icon_draw(surface_t *s, int kind, int x, int w, int on);
 
 /* ---------------------------------------------------------------------- */
 /* Dock                                                                   */
@@ -69,6 +85,8 @@ static int clock_icon_minute = -1;
 
 static struct dock_item apps_dock[] = {
 	{ .kind = DOCK_APP, .app = APP_FILES, .name = "Files" },
+	{ .kind = DOCK_APP, .app = APP_FIREFOX, .name = "Firefox" },
+	{ .kind = DOCK_APP, .app = APP_STORE, .name = "App Store" },
 	{ .kind = DOCK_APP, .app = APP_TERMINAL, .name = "Terminal" },
 	{ .kind = DOCK_APP, .app = APP_CLOCK, .name = "Clock" },
 	{ .kind = DOCK_APP, .app = APP_PREFS, .name = "System Preferences" },
@@ -80,8 +98,18 @@ static struct dock_item trash_item = { .kind = DOCK_TRASH, .name = "Trash" };
 /* Desktop icons and pointer state                                        */
 
 static surface_t *cursor_surf;
-static surface_t *disk_icon;
-static int disk_x, disk_y, disk_selected;
+static double shot_t0 = -10;
+static int hide_cursor;
+struct desk_icon {
+	const char *label;
+	surface_t *icon;
+	int x, y;
+	void (*open)(void);
+};
+
+#define MAX_DESK 4
+static struct desk_icon desk[MAX_DESK];
+static int ndesk, desk_selected = -1;
 #define DESK_ICON 64
 
 static int ptr_x, ptr_y, button_down;
@@ -97,6 +125,13 @@ static const char *const app_names[APP_COUNT] = {
 	[APP_CLOCK] = "Clock",
 	[APP_PREFS] = "System Preferences",
 	[APP_ABOUT] = "Files",
+	[APP_X11] = "X11",
+	[APP_FIREFOX] = "Firefox",
+	[APP_ALERT] = "Files",
+	[APP_STORE] = "App Store",
+	[APP_TEXTEDIT] = "TextEdit",
+	[APP_PREVIEW] = "Preview",
+	[APP_INSTALLER] = "Installer",
 };
 
 double now_s(void)
@@ -155,7 +190,7 @@ window_t *wm_create(const char *title, enum app_id app, int w, int h)
 	static int cascade;
 	int n = cascade++ % 6;
 
-	snprintf(win->title, sizeof(win->title), "%s", title);
+	snprintf(win->title, sizeof(win->title), "%s", _(title));
 	win->app = app;
 	if (w > dt.w - 40)
 		w = dt.w - 40;
@@ -337,6 +372,8 @@ int wm_animating(void)
 	for (w = dt.windows; w; w = w->next)
 		if (w->anim != ANIM_NONE)
 			return 1;
+	if (notify_animating() || sound_osd_active() || dt.now - shot_t0 < 0.4)
+		return 1;
 	for (i = 0; i < ndock; i++)
 		if (dock[i].bounce_t0 > 0)
 			return 1;
@@ -406,6 +443,11 @@ static void draw_window(window_t *win)
 		if (i == 2 && !win->resizable)
 			show = 0;
 		aqua_traffic(s, 14.5f + 21 * i, 11, 6.5f, i, active, show);
+		if (i == 0 && win->edited && !show) {
+			paint_t dot = paint_solid(0xb0400000);
+
+			fill_circle(s, 14.5f, 11, 2.2f, &dot);
+		}
 	}
 	{
 		int tw = text_width(fonts[FONT_UI], 13, win->title);
@@ -674,7 +716,7 @@ static void draw_dock(surface_t *f)
 
 	if (dock_hover >= 0 && dock_hover < ndock && !button_down) {
 		struct dock_item *it = &dock[dock_hover];
-		const char *name = it->kind == DOCK_WINDOW ? it->win->title : it->name;
+		const char *name = it->kind == DOCK_WINDOW ? it->win->title : _(it->name);
 		int tw = text_width(fonts[FONT_UI_BOLD], 14, name);
 		int tx = (int)(it->x + it->size / 2 - tw / 2.0f);
 		int ty = (int)(dt.h - 9 - it->size - 10);
@@ -693,16 +735,34 @@ static void draw_dock(surface_t *f)
 
 static void act_about(void) { app_about(); }
 static void act_prefs(void) { app_prefs(); }
+static void act_store(void) { app_store(0); }
+static void act_updates(void) { app_store(1); }
 static void act_restart(void) { wc_shutdown(1); }
+
+static void act_logout(void)
+{
+	while (dt.windows)
+		wm_finalize(dt.windows);
+	dt.focus = NULL;
+	open_menu = -1;
+	menubar_dirty = 1;
+	login_start();
+}
 static void act_shutdown(void) { wc_shutdown(0); }
-static void act_new_files(void) { app_files("/root", "Home"); }
+static void act_new_files(void) { app_files(dt.home, "Home"); }
 static void act_new_term(void) { app_terminal(); }
+static void act_new_text(void) { app_textedit(NULL); }
+static void act_save(void) { if (dt.focus && dt.focus->save) dt.focus->save(dt.focus); }
+static void act_screenshot(void) { take_screenshot(); }
 static void act_clock(void) { app_clock(); }
+static void act_firefox(void) { app_firefox(); }
 static void act_close(void) { if (dt.focus) wm_close(dt.focus); }
+static void act_copy(void) { if (dt.focus && dt.focus->copy) dt.focus->copy(dt.focus); }
+static void act_paste(void) { if (dt.focus && dt.focus->paste) dt.focus->paste(dt.focus); }
 static void act_minimize(void) { if (dt.focus) wm_minimize(dt.focus); }
 static void act_zoom(void) { if (dt.focus) wm_zoom(dt.focus); }
 static void act_go_computer(void) { app_files("/", "Water HD"); }
-static void act_go_home(void) { app_files("/root", "Home"); }
+static void act_go_home(void) { app_files(dt.home, "Home"); }
 static void act_go_apps(void) { app_files("/bin", "Applications"); }
 static void act_go_utils(void) { app_files("/sbin", "Utilities"); }
 
@@ -721,12 +781,27 @@ static enum app_id front_app(void)
 	return dt.focus ? dt.focus->app : APP_NONE;
 }
 
+static const char *front_app_name(void)
+{
+	if (dt.focus && dt.focus->app_name[0])
+		return dt.focus->app_name;
+	return app_names[front_app()];
+}
+
 static struct menu *add_menu(const char *title)
 {
 	struct menu *m = &menus[nmenus++];
 
 	memset(m, 0, sizeof(*m));
-	m->title = title;
+	m->title = _(title);
+	return m;
+}
+
+static struct menu *add_extra(enum extra_kind kind)
+{
+	struct menu *m = add_menu("");
+
+	m->extra = kind;
 	return m;
 }
 
@@ -738,11 +813,93 @@ static void add_item(struct menu *m, const char *label, const char *key,
 	if (m->n >= MAX_ITEMS)
 		return;
 	it = &m->items[m->n++];
-	it->label = label;
+	memset(it, 0, sizeof(*it));
+	it->label = _(label);
 	it->key = key;
 	it->enabled = enabled;
 	it->act = act;
-	it->win = NULL;
+}
+
+static void add_item_i(struct menu *m, const char *label, int enabled,
+		       void (*act_i)(int), int arg, int checked)
+{
+	add_item(m, label, NULL, enabled, NULL);
+	m->items[m->n - 1].act_i = act_i;
+	m->items[m->n - 1].arg = arg;
+	m->items[m->n - 1].checked = checked;
+}
+
+static void act_layout(int l)
+{
+	input_set_layout(l);
+	x11_set_layout(l);
+	menubar_dirty = 1;
+	dt.redraw = 1;
+}
+
+static void act_network_prefs(void) { app_prefs(); }
+
+static void build_extras(void)
+{
+	static char date[64], status[96];
+	time_t t = time(NULL);
+	struct tm tm;
+	struct menu *m;
+
+	/* Right to left, as they appear on screen. */
+	m = add_extra(EXTRA_SPOTLIGHT);
+	m->custom = &spotlight_menu;
+
+	m = add_extra(EXTRA_CLOCK);
+	localtime_r(&t, &tm);
+	format_date(date, sizeof(date), &tm);
+	add_item(m, date, NULL, 0, NULL);
+	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Show Clock", NULL, 1, act_clock);
+
+	m = add_extra(EXTRA_LAYOUT);
+	add_item_i(m, "U.S.", 1, act_layout, LAYOUT_US, input_layout() == LAYOUT_US);
+	add_item_i(m, "\xd0\xa0\xd1\x83\xd1\x81\xd1\x81\xd0\xba\xd0\xb0\xd1\x8f", 1,
+		   act_layout, LAYOUT_RU, input_layout() == LAYOUT_RU);
+	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Alt+Shift", NULL, 0, NULL);
+
+	if (sound_available()) {
+		m = add_extra(EXTRA_VOLUME);
+		m->custom = &volume_menu;
+	}
+
+	m = add_extra(EXTRA_NETWORK);
+	if (net.connected)
+		snprintf(status, sizeof(status), _("%s is connected to the Internet"),
+			 _(net.kind));
+	else
+		snprintf(status, sizeof(status), "%s", _("No network connection"));
+	add_item(m, status, NULL, 0, NULL);
+	add_item(m, "-", NULL, 0, NULL);
+	if (wifi_present()) {
+		static const char *const bars[] = { "", "\xe2\x96\x82",
+			"\xe2\x96\x82\xe2\x96\x84",
+			"\xe2\x96\x82\xe2\x96\x84\xe2\x96\x86",
+			"\xe2\x96\x82\xe2\x96\x84\xe2\x96\x86\xe2\x96\x88" };
+		const struct wifi_net *nets;
+		int n = wifi_networks(&nets), i;
+
+		add_item(m, wifi_enabled() ? "Wi-Fi: On" : "Wi-Fi: Off", NULL, 0, NULL);
+		add_item_i(m, wifi_enabled() ? "Turn Wi-Fi Off" : "Turn Wi-Fi On", 1,
+			   wifi_toggle, !wifi_enabled(), 0);
+		if (wifi_enabled() && n) {
+			add_item(m, "-", NULL, 0, NULL);
+			for (i = 0; i < n && m->n < MAX_ITEMS - 3; i++) {
+				add_item_i(m, nets[i].ssid, 1, wifi_connect, i, nets[i].active);
+				m->items[m->n - 1].key = bars[wifi_bars(nets[i].signal)];
+			}
+		} else if (wifi_enabled()) {
+			add_item(m, "Looking for networks\xe2\x80\xa6", NULL, 0, NULL);
+		}
+		add_item(m, "-", NULL, 0, NULL);
+	}
+	add_item(m, "Network Preferences...", NULL, 1, act_network_prefs);
 }
 
 static void build_menus(void)
@@ -757,15 +914,24 @@ static void build_menus(void)
 	m = add_menu("");
 	add_item(m, "About This Computer", NULL, 1, act_about);
 	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Software Update...", NULL, 1, act_updates);
+	add_item(m, "App Store...", NULL, 1, act_store);
+	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "System Preferences...", NULL, 1, act_prefs);
 	add_item(m, "Dock", NULL, 0, NULL);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Restart...", NULL, 1, act_restart);
+	if (user_can_login()) {
+		static char logout[96];
+
+		snprintf(logout, sizeof(logout), _("Log Out %s..."), dt.user);
+		add_item(m, logout, NULL, 1, act_logout);
+	}
 	add_item(m, "Shut Down...", NULL, 1, act_shutdown);
 
-	m = add_menu(app_names[app]);
-	snprintf(about_app, sizeof(about_app), "About %s", app_names[app]);
-	snprintf(quit_app, sizeof(quit_app), "Quit %s", app_names[app]);
+	m = add_menu(front_app_name());
+	snprintf(about_app, sizeof(about_app), "About %s", front_app_name());
+	snprintf(quit_app, sizeof(quit_app), "Quit %s", front_app_name());
 	add_item(m, about_app, NULL, 1, act_about);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Preferences...", NULL, 1, act_prefs);
@@ -779,6 +945,10 @@ static void build_menus(void)
 	m = add_menu("File");
 	add_item(m, "New Files Window", "\xe2\x8c\x98N", 1, act_new_files);
 	add_item(m, "New Terminal", "\xe2\x8c\x98T", 1, act_new_term);
+	add_item(m, "New Text Document", NULL, 1, act_new_text);
+	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Save", "\xe2\x8c\x98S", has_win && dt.focus->save, act_save);
+	add_item(m, "Take Screenshot", "\xe2\x87\xa7\xe2\x8c\x98" "3", 1, act_screenshot);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Close Window", "\xe2\x8c\x98W", has_win, act_close);
 
@@ -786,8 +956,9 @@ static void build_menus(void)
 	add_item(m, "Undo", "\xe2\x8c\x98Z", 0, NULL);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Cut", "\xe2\x8c\x98X", 0, NULL);
-	add_item(m, "Copy", "\xe2\x8c\x98" "C", 0, NULL);
-	add_item(m, "Paste", "\xe2\x8c\x98V", 0, NULL);
+	add_item(m, "Copy", "\xe2\x8c\x98" "C", has_win && dt.focus->copy, act_copy);
+	add_item(m, "Paste", "\xe2\x8c\x98V", has_win && dt.focus->paste &&
+		 clip_get()[0], act_paste);
 	add_item(m, "Select All", "\xe2\x8c\x98" "A", 0, NULL);
 
 	m = add_menu("View");
@@ -800,6 +971,7 @@ static void build_menus(void)
 	add_item(m, "Computer", "\xe2\x8c\x98\xe2\x87\xa7" "C", 1, act_go_computer);
 	add_item(m, "Home", "\xe2\x8c\x98\xe2\x87\xa7H", 1, act_go_home);
 	add_item(m, "Applications", NULL, 1, act_go_apps);
+	add_item(m, "Firefox", NULL, 1, act_firefox);
 	add_item(m, "Utilities", NULL, 1, act_go_utils);
 
 	m = add_menu("Window");
@@ -815,6 +987,8 @@ static void build_menus(void)
 
 	m = add_menu("Help");
 	add_item(m, WC_NAME " Help", "\xe2\x8c\x98?", 0, NULL);
+
+	build_extras();
 }
 
 static void draw_menubar(void)
@@ -838,7 +1012,7 @@ static void draw_menubar(void)
 	fill_rect(s, 0, MENUBAR_H - 1, s->w, 1, 0x80606060);
 
 	x = 8;
-	for (i = 0; i < nmenus; i++) {
+	for (i = 0; i < nmenus && !menus[i].extra; i++) {
 		struct menu *m = &menus[i];
 		font_t *f = i == 1 ? fonts[FONT_UI_BOLD] : fonts[FONT_UI];
 		int w = i == 0 ? 30 : text_width(f, 14, m->title) + 22;
@@ -855,24 +1029,53 @@ static void draw_menubar(void)
 		x += w;
 	}
 
+	/* Status items, laid out from the right edge. */
 	localtime_r(&t, &tm);
-	strftime(menubar_clock, sizeof(menubar_clock),
-		 dt.set.show_seconds ? "%a %l:%M:%S %p" : "%a %l:%M %p", &tm);
-	{
-		const char *c = menubar_clock;
-		char buf[64];
+	format_clock(menubar_clock, sizeof(menubar_clock), &tm, dt.set.show_seconds);
+	x = s->w - 6;
+	for (; i < nmenus; i++) {
+		struct menu *m = &menus[i];
+		int w = 30, on = open_menu == i;
+		uint32_t fg = on ? 0xffffffff : 0xff000000;
 
-		/* collapse the padding space strftime adds for %l */
-		snprintf(buf, sizeof(buf), "%s", c);
-		{
-			char *dbl = strstr(buf, "  ");
+		if (m->extra == EXTRA_CLOCK)
+			w = text_width(fonts[FONT_UI], 14, menubar_clock) + 20;
+		x -= w;
+		m->x = x;
+		m->w = w;
+		if (on)
+			aqua_highlight(s, x, 0, w, MENUBAR_H - 1, 0);
+		switch (m->extra) {
+		case EXTRA_CLOCK:
+			draw_text(s, fonts[FONT_UI], 14, x + 10, 16, fg, menubar_clock);
+			break;
+		case EXTRA_LAYOUT:
+			icon_flag(s, x + 6, 5, 18, 12, input_layout());
+			break;
+		case EXTRA_NETWORK:
+			if (!strcmp(net.kind, "Wi-Fi") || (wifi_present() && !net.connected)) {
+				const struct wifi_net *nets;
+				int n = wifi_networks(&nets), k, bars = 0;
 
-			if (dbl)
-				memmove(dbl, dbl + 1, strlen(dbl));
+				for (k = 0; k < n; k++)
+					if (nets[k].active)
+						bars = wifi_bars(nets[k].signal);
+				icon_wifi(s, x + 5, 1, 20, net.connected ? bars : 0, fg);
+				break;
+			}
+			if (!net_icon[0]) {
+				net_icon[0] = surf_new(18, 18);
+				icon_network(net_icon[0], 0, 0, 18, 0);
+				net_icon[1] = surf_new(18, 18);
+				icon_network(net_icon[1], 0, 0, 18, 1);
+			}
+			blit(s, net_icon[net.connected], x + 6, 2, 255);
+			break;
+		default:
+			if (m->custom)
+				extra_icon_draw(s, m->extra, x, w, on);
+			break;
 		}
-		draw_text(s, fonts[FONT_UI], 14,
-			  s->w - 16 - text_width(fonts[FONT_UI], 14, buf), 16,
-			  0xff000000, buf);
 	}
 	menubar_dirty = 0;
 }
@@ -907,6 +1110,10 @@ static void draw_dropdown(void)
 	}
 	w += kw + (kw ? 20 : 0);
 	h = item_y(m, m->n) + 5;
+	if (m->custom) {
+		w = m->custom->w;
+		h = m->custom->h;
+	}
 	dd_x = m->x;
 	if (dd_x + w > dt.w - 2)
 		dd_x = dt.w - 2 - w;
@@ -926,6 +1133,11 @@ static void draw_dropdown(void)
 	p = paint_solid(0x50000000);
 	stroke_rrect(s, 0, -8, w, h + 8, 6, 1, &p);
 
+	if (m->custom) {
+		m->custom->draw(s, w, h);
+		dropdown_dirty = 0;
+		return;
+	}
 	for (i = 0; i < m->n; i++) {
 		struct mitem *it = &m->items[i];
 		int y = item_y(m, i);
@@ -939,6 +1151,8 @@ static void draw_dropdown(void)
 			aqua_highlight(s, 1, y, w - 2, ITEM_H, 0);
 			col = 0xffffffff;
 		}
+		if (it->checked)
+			draw_text(s, fonts[FONT_UI], 14, 6, y + 15, col, "\xe2\x9c\x93");
 		gfx_clip(s, 0, y, w - (it->key ? kw + 26 : 8), ITEM_H);
 		draw_text(s, fonts[FONT_UI], 14, 20, y + 15, col, it->label);
 		gfx_noclip();
@@ -957,6 +1171,8 @@ static int dropdown_item_at(int x, int y)
 	if (open_menu < 0)
 		return -1;
 	m = &menus[open_menu];
+	if (m->custom)
+		return -1;
 	if (x < dd_x || x >= dd_x + dd_w || y < dd_y || y >= dd_y + dd_h)
 		return -1;
 	for (i = 0; i < m->n; i++) {
@@ -988,6 +1204,50 @@ static void open_menu_at(int idx)
 	menubar_dirty = 1;
 	dropdown_dirty = 1;
 	dt.redraw = 1;
+	if (idx >= 0 && menus[idx].custom && menus[idx].custom->opened)
+		menus[idx].custom->opened();
+	if (idx >= 0 && menus[idx].extra == EXTRA_NETWORK)
+		wifi_scan();
+}
+
+void wm_menu_changed(void)
+{
+	dropdown_dirty = 1;
+	dt.redraw = 1;
+}
+
+/* Menu contents changed (Wi-Fi networks found...): rebuild them. */
+void wm_menus_changed(void)
+{
+	menubar_dirty = 1;
+	dropdown_dirty = 1;
+	dt.redraw = 1;
+}
+
+void wm_menu_close(void)
+{
+	open_menu_at(-1);
+}
+
+static int in_dropdown(int x, int y)
+{
+	return open_menu >= 0 && x >= dd_x && x < dd_x + dd_w && y >= dd_y &&
+	       y < dd_y + dd_h;
+}
+
+/* Mouse events inside a custom dropdown; returns 1 if consumed. */
+static int custom_menu_mouse(const event_t *ev)
+{
+	const struct menu_custom *c;
+
+	if (open_menu < 0 || !(c = menus[open_menu].custom) || !c->mouse)
+		return 0;
+	if (!in_dropdown(ev->x, ev->y) && !(ev->type == EV_MOTION && button_down))
+		return 0;
+	if (c->mouse(ev, ev->x - dd_x, ev->y - dd_y))
+		open_menu_at(-1);
+	wm_menu_changed();
+	return 1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1055,6 +1315,11 @@ static void handle_button(const event_t *ev)
 	int i;
 
 	button_down = ev->pressed;
+	if (custom_menu_mouse(ev))
+		return;
+	if (ev->pressed && ev->button == 1 && open_menu < 0 &&
+	    notify_click(ev->x, ev->y))
+		return;
 	if (!ev->pressed) {
 		if (open_menu >= 0) {
 			int it = dropdown_item_at(ev->x, ev->y);
@@ -1068,6 +1333,8 @@ static void handle_button(const event_t *ev)
 						wm_restore(mi->win);
 					else
 						wm_focus(mi->win);
+				} else if (mi->enabled && mi->act_i) {
+					mi->act_i(mi->arg);
 				} else if (mi->enabled && mi->act) {
 					mi->act();
 				}
@@ -1135,8 +1402,8 @@ static void handle_button(const event_t *ev)
 		int lx = ev->x - w->x, ly = ev->y - w->y;
 		int b;
 
-		if (disk_selected) {
-			disk_selected = 0;
+		if (desk_selected >= 0) {
+			desk_selected = -1;
 			dt.redraw = 1;
 		}
 		if (dt.focus != w)
@@ -1182,13 +1449,16 @@ static void handle_button(const event_t *ev)
 	}
 
 	/* desktop */
-	if (ev->x >= disk_x - 10 && ev->x < disk_x + DESK_ICON + 10 &&
-	    ev->y >= disk_y && ev->y < disk_y + DESK_ICON + 22) {
-		if (disk_selected && dt.now - last_click_t < 0.45)
-			act_go_computer();
-		disk_selected = 1;
-	} else {
-		disk_selected = 0;
+	{
+		int k, hit = -1;
+
+		for (k = 0; k < ndesk; k++)
+			if (ev->x >= desk[k].x - 10 && ev->x < desk[k].x + DESK_ICON + 10 &&
+			    ev->y >= desk[k].y && ev->y < desk[k].y + DESK_ICON + 22)
+				hit = k;
+		if (hit >= 0 && hit == desk_selected && dt.now - last_click_t < 0.45)
+			desk[hit].open();
+		desk_selected = hit;
 	}
 	last_click_t = dt.now;
 	if (dt.focus) {
@@ -1210,6 +1480,8 @@ static void handle_motion(const event_t *ev)
 	ptr_y = ev->y;
 	dt.redraw = 1;
 
+	if (custom_menu_mouse(ev))
+		return;
 	if (open_menu >= 0) {
 		int it = dropdown_item_at(ev->x, ev->y);
 
@@ -1283,6 +1555,16 @@ static int is_key(const event_t *ev, unsigned ch)
 
 void wm_event(const event_t *ev)
 {
+	if (login_active()) {
+		if (ev->type == EV_MOTION || ev->type == EV_BUTTON) {
+			ptr_x = ev->x;
+			ptr_y = ev->y;
+			dt.redraw = 1;
+		}
+		if (ev->type != EV_MOTION)
+			login_event(ev);
+		return;
+	}
 	switch (ev->type) {
 	case EV_MOTION:
 		handle_motion(ev);
@@ -1301,11 +1583,42 @@ void wm_event(const event_t *ev)
 				w->mouse(w, ev, ev->x - w->x - 1, ev->y - w->y - TITLE_H);
 		}
 		break;
+	case EV_LAYOUT:
+		x11_set_layout(input_layout());
+		menubar_dirty = 1;
+		dt.redraw = 1;
+		break;
+	case EV_KEYRAW:
+		/* Releases always go through so no key is left stuck down. */
+		if (dt.focus && dt.focus->rawkey && (open_menu < 0 || !ev->pressed))
+			dt.focus->rawkey(dt.focus, ev);
+		break;
 	case EV_KEYPRESS:
 		if (open_menu >= 0) {
+			const struct menu_custom *c = menus[open_menu].custom;
+
 			if (ev->ch == 27)
 				open_menu_at(-1);
+			else if (c && c->key && c->key(ev))
+				open_menu_at(-1);
+			wm_menu_changed();
 			return;
+		}
+		if (sound_key(ev)) {
+			menubar_dirty = 1;
+			break;
+		}
+		if ((ev->mods & MOD_ALT) && (ev->mods & MOD_SHIFT) && ev->key == KEY_3) {
+			take_screenshot();
+			break;
+		}
+		if ((ev->mods & MOD_ALT) && ev->key == KEY_SPACE) {
+			int k;
+
+			for (k = 0; k < nmenus; k++)
+				if (menus[k].extra == EXTRA_SPOTLIGHT)
+					open_menu_at(k);
+			break;
 		}
 		/* Alt (or the Windows key) acts as the Command key. */
 		if (is_key(ev, 'w')) {
@@ -1318,7 +1631,7 @@ void wm_event(const event_t *ev)
 			act_minimize();
 		} else if (is_key(ev, 'q')) {
 			act_quit_app();
-		} else if (dt.focus && dt.focus->key) {
+		} else if (dt.focus && dt.focus->key && !dt.focus->rawkey) {
 			dt.focus->key(dt.focus, ev);
 		}
 		dt.redraw = 1;
@@ -1328,6 +1641,25 @@ void wm_event(const event_t *ev)
 
 /* ---------------------------------------------------------------------- */
 /* Main hooks                                                             */
+
+static void extra_icon_draw(surface_t *s, int kind, int x, int w, int on)
+{
+	if (kind == EXTRA_VOLUME)
+		sound_menu_icon(s, x, w, on);
+	else if (kind == EXTRA_SPOTLIGHT)
+		spotlight_menu_icon(s, x, w, on);
+}
+
+/* After switching the interface language. */
+void wm_relayout_language(void)
+{
+	window_t *w;
+
+	for (w = dt.windows; w; w = w->next)
+		w->dirty = 1;
+	menubar_dirty = 1;
+	dt.redraw = 1;
+}
 
 void wm_init(void)
 {
@@ -1344,6 +1676,12 @@ void wm_init(void)
 		case APP_TERMINAL:
 			apps_dock[i].icon = render_icon(icon_terminal, dock_max);
 			break;
+		case APP_FIREFOX:
+			apps_dock[i].icon = render_icon(icon_globe, dock_max);
+			break;
+		case APP_STORE:
+			apps_dock[i].icon = render_icon(icon_store, dock_max);
+			break;
 		case APP_PREFS:
 			apps_dock[i].icon = render_icon(icon_gear, dock_max);
 			break;
@@ -1357,11 +1695,17 @@ void wm_init(void)
 	cursor_surf = make_cursor();
 	ptr_x = dt.w / 2;
 	ptr_y = dt.h / 2;
-	disk_icon = render_icon(icon_disk, DESK_ICON);
-	disk_x = dt.w - DESK_ICON - 34;
-	disk_y = MENUBAR_H + 18;
+	desk[ndesk++] = (struct desk_icon){ "Water HD", render_icon(icon_disk, DESK_ICON),
+					    dt.w - DESK_ICON - 34, MENUBAR_H + 18,
+					    act_go_computer };
+	if (live_system())
+		desk[ndesk++] = (struct desk_icon){ "Install Water Candy",
+						    render_icon(icon_installer, DESK_ICON),
+						    dt.w - DESK_ICON - 34, MENUBAR_H + 118,
+						    app_installer };
 	dock_build();
 	dock_layout();
+	net_poll(&net);
 	draw_menubar();
 }
 
@@ -1398,6 +1742,21 @@ void wm_tick(void)
 		}
 	}
 	update_clock_icon();
+
+	{
+		static double last_net;
+
+		if (dt.now - last_net > 3) {
+			int was = net.connected;
+
+			last_net = dt.now;
+			net_poll(&net);
+			if (was != net.connected) {
+				menubar_dirty = 1;
+				dt.redraw = 1;
+			}
+		}
+	}
 
 	localtime_r(&t, &tm);
 	strftime(buf, sizeof(buf), dt.set.show_seconds ? "%T" : "%H:%M", &tm);
@@ -1473,24 +1832,36 @@ void wm_render(void)
 	paint_t p;
 
 	memcpy(f->px, dt.wall->px, (size_t)f->w * f->h * 4);
-
-	/* desktop icon */
-	if (disk_selected) {
-		p = paint_solid(0x60000000);
-		fill_rrect(f, disk_x - 4, disk_y - 4, DESK_ICON + 8, DESK_ICON + 8, 6, &p);
+	if (login_active()) {
+		login_render(f);
+		blit(f, cursor_surf, ptr_x - 3, ptr_y - 3, 255);
+		dt.frames++;
+		return;
 	}
-	blit(f, disk_icon, disk_x, disk_y, 255);
-	{
-		const char *label = "Water HD";
-		int tw = text_width(fonts[FONT_UI_BOLD], 13, label);
-		int tx = disk_x + (DESK_ICON - tw) / 2, ty = disk_y + DESK_ICON + 14;
 
-		if (disk_selected) {
-			p = paint_solid(0xff2a5fc8);
-			fill_rrect(f, tx - 4, ty - 12, tw + 8, 16, 8, &p);
+	/* desktop icons */
+	{
+		int k;
+
+		for (k = 0; k < ndesk; k++) {
+			struct desk_icon *d = &desk[k];
+			const char *label = _(d->label);
+			int tw = text_width(fonts[FONT_UI_BOLD], 13, label);
+			int tx = d->x + (DESK_ICON - tw) / 2, ty = d->y + DESK_ICON + 14;
+
+			if (k == desk_selected) {
+				p = paint_solid(0x60000000);
+				fill_rrect(f, d->x - 4, d->y - 4, DESK_ICON + 8, DESK_ICON + 8,
+					   6, &p);
+			}
+			blit(f, d->icon, d->x, d->y, 255);
+			if (k == desk_selected) {
+				p = paint_solid(0xff2a5fc8);
+				fill_rrect(f, tx - 4, ty - 12, tw + 8, 16, 8, &p);
+			}
+			draw_text_shadow(f, fonts[FONT_UI_BOLD], 13, tx, ty, 0xffffffff,
+					 k == desk_selected ? 0 : 0xd0000000, label);
 		}
-		draw_text_shadow(f, fonts[FONT_UI_BOLD], 13, tx, ty, 0xffffffff,
-				 disk_selected ? 0 : 0xd0000000, label);
 	}
 
 	for (w = dt.windows; w; w = w->next) {
@@ -1517,6 +1888,9 @@ void wm_render(void)
 
 	draw_dock(f);
 
+	notify_render(f);
+	sound_osd_render(f);
+
 	if (open_menu >= 0) {
 		if (dropdown_dirty || !dropdown_surf)
 			draw_dropdown();
@@ -1524,6 +1898,61 @@ void wm_render(void)
 		blit(f, dropdown_surf, dd_x, dd_y, 255);
 	}
 
-	blit(f, cursor_surf, ptr_x - 3, ptr_y - 3, 255);
+	{
+		window_t *under = open_menu < 0 ? window_at(ptr_x, ptr_y) : NULL;
+
+		/* X11 programs draw their own pointer (text beam, hand...). */
+		if (!hide_cursor &&
+		    !(under && under->own_cursor && under->anim == ANIM_NONE &&
+		      ptr_y >= under->y + TITLE_H && !drag_win && !resize_win))
+			blit(f, cursor_surf, ptr_x - 3, ptr_y - 3, 255);
+	}
+	/* the camera flash after a screenshot */
+	if (dt.now - shot_t0 < 0.4) {
+		int a = (int)(200 * (1 - (dt.now - shot_t0) / 0.4));
+
+		fill_rect(f, 0, 0, f->w, f->h, ALPHA(0xffffff, a));
+	}
 	dt.frames++;
+}
+
+/* Alt+Shift+3: save the screen as a PNG in ~/Pictures, like Mac OS X. */
+void take_screenshot(void)
+{
+	char dir[512], path[700], stamp[64];
+	time_t t = time(NULL);
+	struct tm tm;
+
+	hide_cursor = 1;
+	shot_t0 = -10;
+	wm_render();
+	hide_cursor = 0;
+	localtime_r(&t, &tm);
+	snprintf(dir, sizeof(dir), "%s/%s", dt.home,
+		 dt.set.lang == LANG_RU ? "\xd0\x98\xd0\xb7\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb0\xd0\xb6\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f" : "Pictures");
+	mkdir(dir, 0755);
+	if (chown(dir, dt.uid, dt.gid)) {
+		/* not fatal: the folder just stays owned by root */
+	}
+	if (dt.set.lang == LANG_RU) {
+		strftime(stamp, sizeof(stamp), "%Y-%m-%d \xd0\xb2 %H.%M.%S", &tm);
+		snprintf(path, sizeof(path), "%s/\xd0\xa1\xd0\xbd\xd0\xb8\xd0\xbc\xd0\xbe\xd0\xba \xd1\x8d\xd0\xba\xd1\x80\xd0\xb0\xd0\xbd\xd0\xb0 %s.png", dir, stamp);
+	} else {
+		strftime(stamp, sizeof(stamp), "%Y-%m-%d at %H.%M.%S", &tm);
+		snprintf(path, sizeof(path), "%s/Screen Shot %s.png", dir, stamp);
+	}
+	if (image_save_png(path, dt.frame)) {
+		notify(_("Screenshot"), _("Could not save the screenshot"), NULL);
+		return;
+	}
+	if (chown(path, dt.uid, dt.gid)) {
+		/* the file still exists, just owned by root */
+	}
+	shot_t0 = dt.now;
+	{
+		const char *name = strrchr(path, '/') + 1;
+
+		notify(_("Screenshot"), name, NULL);
+	}
+	dt.redraw = 1;
 }

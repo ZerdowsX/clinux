@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 #include "wc.h"
@@ -17,7 +18,7 @@
 #define CELL_H 84
 #define ICON 48
 
-struct entry {
+struct fentry {
 	char name[256];
 	int is_dir, is_exec;
 };
@@ -25,7 +26,7 @@ struct entry {
 struct files {
 	char path[PATH_MAX];
 	char back[PATH_MAX];
-	struct entry *ents;
+	struct fentry *ents;
 	int n, sel, scroll;
 	double last_click;
 	int pressed_btn;
@@ -35,7 +36,7 @@ static surface_t *ic_folder, *ic_doc, *ic_exec;
 
 static int cmp_ent(const void *a, const void *b)
 {
-	const struct entry *x = a, *y = b;
+	const struct fentry *x = a, *y = b;
 
 	return strcasecmp(x->name, y->name);
 }
@@ -56,7 +57,7 @@ static void load_dir(struct files *f)
 	while ((de = readdir(d))) {
 		char full[PATH_MAX + 260];
 		struct stat st;
-		struct entry *e;
+		struct fentry *e;
 
 		if (de->d_name[0] == '.')
 			continue;
@@ -134,7 +135,7 @@ static void files_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	for (i = 0; i < f->n; i++) {
 		int cx = x + 8 + (i % cols) * CELL_W;
 		int cy = gy + 8 + (i / cols) * CELL_H - f->scroll;
-		struct entry *e = &f->ents[i];
+		struct fentry *e = &f->ents[i];
 		surface_t *ic = e->is_dir ? ic_folder : e->is_exec ? ic_exec : ic_doc;
 		int tw;
 
@@ -158,11 +159,11 @@ static void files_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	}
 	if (!f->n)
 		draw_text_center(s, fonts[FONT_UI], 13, x, w, gy + 40, 0xff909090,
-				 "This folder is empty");
+				 _("This folder is empty"));
 	gfx_clip(s, x, y, w, h);
 
 	fill_rect(s, x, y + h - STATUS_H, w, 1, 0x40000000);
-	snprintf(status, sizeof(status), "%d item%s", f->n, f->n == 1 ? "" : "s");
+	format_items(status, sizeof(status), f->n);
 	draw_text_center(s, fonts[FONT_UI], 11, x, w, y + h - 6, 0xff404040, status);
 }
 
@@ -236,13 +237,15 @@ static void files_mouse(window_t *win, const event_t *ev, int x, int y)
 		if (idx >= f->n)
 			idx = -1;
 	}
-	if (idx >= 0 && idx == f->sel && dt.now - f->last_click < 0.5 &&
-	    f->ents[idx].is_dir) {
+	if (idx >= 0 && idx == f->sel && dt.now - f->last_click < 0.5) {
 		char tmp[PATH_MAX + 260];
 
 		snprintf(tmp, sizeof(tmp), "%s/%s", strcmp(f->path, "/") ? f->path : "",
 			 f->ents[idx].name);
-		set_path(win, f, tmp);
+		if (f->ents[idx].is_dir)
+			set_path(win, f, tmp);
+		else
+			wc_open_file(tmp);
 		f->last_click = 0;
 	} else {
 		f->sel = idx;
@@ -259,6 +262,42 @@ static void files_destroy(window_t *win)
 	free(f);
 }
 
+/* Open a file with the application for its kind, like a double click. */
+void wc_open_file(const char *path)
+{
+	static const char *const text_ext[] = { ".txt", ".md", ".c", ".h", ".sh", ".py",
+						".conf", ".cfg", ".ini", ".log", ".json",
+						".xml", ".html", ".css", ".js", ".csv",
+						".desktop", ".list", NULL };
+	const char *name = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+	const char *dot = strrchr(name, '.');
+	struct stat st;
+	int i;
+
+	if (stat(path, &st)) {
+		wc_alert("The item cannot be found", path, NULL, NULL);
+		return;
+	}
+	if (S_ISDIR(st.st_mode)) {
+		app_files(path, NULL);
+		return;
+	}
+	if (is_image_file(name)) {
+		app_preview(path);
+		return;
+	}
+	for (i = 0; dot && text_ext[i]; i++)
+		if (!strcasecmp(dot, text_ext[i])) {
+			app_textedit(path);
+			return;
+		}
+	if (!dot && st.st_size < (1 << 20) && !(st.st_mode & 0111)) {
+		app_textedit(path);	/* README, Makefile, ... */
+		return;
+	}
+	wc_alert("There is no application to open this document", name, NULL, NULL);
+}
+
 void app_files(const char *path, const char *title)
 {
 	struct files *f = calloc(1, sizeof(*f));
@@ -273,7 +312,7 @@ void app_files(const char *path, const char *title)
 		icon_app(ic_exec, 0, 0, ICON);
 	}
 	mkdir(path, 0755);	/* e.g. the Trash folder */
-	win = wm_create(title, APP_FILES, 600, 420);
+	win = wm_create(title ? title : "", APP_FILES, 600, 420);
 	win->resizable = 1;
 	win->min_w = 260;
 	win->min_h = 180;

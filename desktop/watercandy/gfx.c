@@ -25,6 +25,50 @@ void gfx_noclip(void)
 	clip_surf = NULL;
 }
 
+static struct { const surface_t *s; int x0, y0, x1, y1; } clip_stack[8];
+static int clip_depth;
+
+void gfx_push_clip(const surface_t *s, int x, int y, int w, int h)
+{
+	int x1 = x + w, y1 = y + h;
+
+	if (clip_depth < 8) {
+		clip_stack[clip_depth].s = clip_surf;
+		clip_stack[clip_depth].x0 = clip_x0;
+		clip_stack[clip_depth].y0 = clip_y0;
+		clip_stack[clip_depth].x1 = clip_x1;
+		clip_stack[clip_depth].y1 = clip_y1;
+		clip_depth++;
+	}
+	if (clip_surf == s) {
+		if (x < clip_x0)
+			x = clip_x0;
+		if (y < clip_y0)
+			y = clip_y0;
+		if (x1 > clip_x1)
+			x1 = clip_x1;
+		if (y1 > clip_y1)
+			y1 = clip_y1;
+	}
+	clip_surf = s;
+	clip_x0 = x;
+	clip_y0 = y;
+	clip_x1 = x1 > x ? x1 : x;
+	clip_y1 = y1 > y ? y1 : y;
+}
+
+void gfx_pop_clip(void)
+{
+	if (!clip_depth)
+		return;
+	clip_depth--;
+	clip_surf = clip_stack[clip_depth].s;
+	clip_x0 = clip_stack[clip_depth].x0;
+	clip_y0 = clip_stack[clip_depth].y0;
+	clip_x1 = clip_stack[clip_depth].x1;
+	clip_y1 = clip_stack[clip_depth].y1;
+}
+
 /* Clamp [x0,x1) x [y0,y1) to the surface and the clip rectangle. */
 static int clamp_box(const surface_t *s, int *x0, int *y0, int *x1, int *y1)
 {

@@ -96,5 +96,8 @@ void blur_surface(surface_t *s, int radius);
 /* Clip rectangle applied to drawing calls that target surface s. */
 void gfx_clip(const surface_t *s, int x, int y, int w, int h);
 void gfx_noclip(void);
+/* Narrow the clip (intersecting any active one on s); pop restores it. */
+void gfx_push_clip(const surface_t *s, int x, int y, int w, int h);
+void gfx_pop_clip(void);
 
 #endif

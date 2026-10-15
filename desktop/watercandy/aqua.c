@@ -65,7 +65,7 @@ void aqua_button(surface_t *s, int x, int y, int w, int h, const char *label,
 	p = paint_vgrad(y + 1, y + h * 0.55f, 0xf0ffffff, 0x30ffffff);
 	fill_rrect(s, x + 3, y + 2, w - 6, h * 0.45f, r * 0.6f, &p);
 	draw_text_center(s, fonts[FONT_UI], 13, x, w, y + h / 2 + 5,
-			 primary ? 0xff0b2246 : 0xff000000, label);
+			 primary ? 0xff0b2246 : 0xff000000, _(label));
 }
 
 void aqua_checkbox(surface_t *s, int x, int y, const char *label, int checked)
@@ -84,7 +84,7 @@ void aqua_checkbox(surface_t *s, int x, int y, const char *label, int checked)
 		draw_line(s, x + 3.5f, y + 7.5f, x + 6.5f, y + 11, 2, &p);
 		draw_line(s, x + 6.5f, y + 11, x + 12.5f, y + 2.5f, 2, &p);
 	}
-	draw_text(s, fonts[FONT_UI], 13, x + 22, y + 12, 0xff000000, label);
+	draw_text(s, fonts[FONT_UI], 13, x + 22, y + 12, 0xff000000, _(label));
 }
 
 void aqua_slider(surface_t *s, int x, int y, int w, float value)
