@@ -41,6 +41,52 @@ static const char keymap[2][KEY_SPACE + 1] = {
 	  '?', 0, '*', 0, ' ' },
 };
 
+/* Russian (JCUKEN) layout, as Unicode code points; 0 = same as US. */
+static const unsigned short keymap_ru[2][KEY_SPACE + 1] = {
+	[0] = {
+		[KEY_GRAVE] = 0x451,
+		[KEY_Q] = 0x439, [KEY_W] = 0x446, [KEY_E] = 0x443, [KEY_R] = 0x43a,
+		[KEY_T] = 0x435, [KEY_Y] = 0x43d, [KEY_U] = 0x433, [KEY_I] = 0x448,
+		[KEY_O] = 0x449, [KEY_P] = 0x437, [KEY_LEFTBRACE] = 0x445,
+		[KEY_RIGHTBRACE] = 0x44a,
+		[KEY_A] = 0x444, [KEY_S] = 0x44b, [KEY_D] = 0x432, [KEY_F] = 0x430,
+		[KEY_G] = 0x43f, [KEY_H] = 0x440, [KEY_J] = 0x43e, [KEY_K] = 0x43b,
+		[KEY_L] = 0x434, [KEY_SEMICOLON] = 0x436, [KEY_APOSTROPHE] = 0x44d,
+		[KEY_Z] = 0x44f, [KEY_X] = 0x447, [KEY_C] = 0x441, [KEY_V] = 0x43c,
+		[KEY_B] = 0x438, [KEY_N] = 0x442, [KEY_M] = 0x44c,
+		[KEY_COMMA] = 0x431, [KEY_DOT] = 0x44e, [KEY_SLASH] = '.',
+	},
+	[1] = {
+		[KEY_GRAVE] = 0x401, [KEY_2] = '"', [KEY_3] = 0x2116, [KEY_4] = ';',
+		[KEY_6] = ':', [KEY_7] = '?',
+		[KEY_Q] = 0x419, [KEY_W] = 0x426, [KEY_E] = 0x423, [KEY_R] = 0x41a,
+		[KEY_T] = 0x415, [KEY_Y] = 0x41d, [KEY_U] = 0x413, [KEY_I] = 0x428,
+		[KEY_O] = 0x429, [KEY_P] = 0x417, [KEY_LEFTBRACE] = 0x425,
+		[KEY_RIGHTBRACE] = 0x42a,
+		[KEY_A] = 0x424, [KEY_S] = 0x42b, [KEY_D] = 0x412, [KEY_F] = 0x410,
+		[KEY_G] = 0x41f, [KEY_H] = 0x420, [KEY_J] = 0x41e, [KEY_K] = 0x41b,
+		[KEY_L] = 0x414, [KEY_SEMICOLON] = 0x416, [KEY_APOSTROPHE] = 0x42d,
+		[KEY_BACKSLASH] = '/',
+		[KEY_Z] = 0x42f, [KEY_X] = 0x427, [KEY_C] = 0x421, [KEY_V] = 0x41c,
+		[KEY_B] = 0x418, [KEY_N] = 0x422, [KEY_M] = 0x42c,
+		[KEY_COMMA] = 0x411, [KEY_DOT] = 0x42e, [KEY_SLASH] = ',',
+	},
+};
+
+static int layout;
+/* Alt+Shift pressed together and released with no other key between. */
+static int switch_armed;
+
+int input_layout(void)
+{
+	return layout;
+}
+
+void input_set_layout(int l)
+{
+	layout = l % LAYOUT_COUNT;
+}
+
 int input_open(int w, int h)
 {
 	DIR *dir = opendir("/dev/input");
@@ -145,12 +191,25 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 		break;
 	}
 	if (bit) {
-		if (value)
+		if (value == 1) {
 			mods |= bit;
-		else
+			if ((mods & (MOD_ALT | MOD_SHIFT)) == (MOD_ALT | MOD_SHIFT) &&
+			    !(mods & MOD_CTRL))
+				switch_armed = 1;
+		} else if (value == 0) {
+			if (switch_armed && (bit == MOD_ALT || bit == MOD_SHIFT)) {
+				event_t sw = { .type = EV_LAYOUT, .x = ptr_x, .y = ptr_y };
+
+				layout = (layout + 1) % LAYOUT_COUNT;
+				cb(&sw);
+			}
+			switch_armed = 0;
 			mods &= ~bit;
+		}
 		return;
 	}
+	if (value == 1)
+		switch_armed = 0;
 
 	if (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE ||
 	    code == BTN_TOUCH) {
@@ -168,8 +227,15 @@ static void key_event(int code, int value, void (*cb)(const event_t *))
 	ev.type = EV_KEYPRESS;
 	ev.key = code;
 	ev.mods = mods;
-	if (code <= KEY_SPACE)
-		ev.ch = (unsigned char)keymap[(mods & MOD_SHIFT) ? 1 : 0][code];
+	if (code <= KEY_SPACE) {
+		int shift = (mods & MOD_SHIFT) ? 1 : 0;
+
+		ev.ch = (unsigned char)keymap[shift][code];
+		/* Shortcuts (Ctrl, Alt) always use the Latin letters. */
+		if (layout == LAYOUT_RU && !(mods & (MOD_CTRL | MOD_ALT)) &&
+		    keymap_ru[shift][code])
+			ev.ch = keymap_ru[shift][code];
+	}
 	if (code == KEY_KPENTER)
 		ev.ch = '\r';
 	if ((mods & MOD_CTRL) && ev.ch >= 'a' && ev.ch <= 'z')

@@ -19,6 +19,9 @@ void app_launch(enum app_id app)
 	case APP_FIREFOX:
 		app_firefox();
 		break;
+	case APP_STORE:
+		app_store(0);
+		break;
 	case APP_TERMINAL:
 		app_terminal();
 		break;
@@ -114,24 +117,24 @@ static void about_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	cy = y + 14 + a->logo->h + 44;
 	draw_text_center(s, fonts[FONT_SERIF], 46, x, w, cy, 0xff101010, WC_NAME);
 	cy += 22;
-	snprintf(buf, sizeof(buf), "(Version %s)", WC_VERSION);
+	snprintf(buf, sizeof(buf), _("(Version %s)"), WC_VERSION);
 	draw_text_center(s, fonts[FONT_UI], 11, x, w, cy, 0xff303030, buf);
 	cy += 30;
 
 	draw_text(s, fonts[FONT_UI], 13, x + w / 2 - 8 -
-		  text_width(fonts[FONT_UI], 13, "Memory:"), cy, 0xff000000, "Memory:");
+		  text_width(fonts[FONT_UI], 13, _("Memory:")), cy, 0xff000000, _("Memory:"));
 	draw_text(s, fonts[FONT_UI], 13, x + w / 2, cy, 0xff000000, a->memory);
 	cy += 20;
 	draw_text(s, fonts[FONT_UI], 13, x + w / 2 - 8 -
-		  text_width(fonts[FONT_UI], 13, "Processor:"), cy, 0xff000000,
-		  "Processor:");
+		  text_width(fonts[FONT_UI], 13, _("Processor:")), cy, 0xff000000,
+		  _("Processor:"));
 	gfx_clip(s, x, y, w - 10, h);
 	draw_text(s, fonts[FONT_UI], 13, x + w / 2, cy, 0xff000000, a->cpu);
 	gfx_noclip();
 	gfx_clip(s, x, y, w, h);
 	cy += 20;
 	draw_text(s, fonts[FONT_UI], 13, x + w / 2 - 8 -
-		  text_width(fonts[FONT_UI], 13, "Kernel:"), cy, 0xff000000, "Kernel:");
+		  text_width(fonts[FONT_UI], 13, _("Kernel:")), cy, 0xff000000, _("Kernel:"));
 	draw_text(s, fonts[FONT_UI], 13, x + w / 2, cy, 0xff000000, a->kernel);
 
 	draw_text_center(s, fonts[FONT_UI], 11, x, w, y + h - 14, 0xff202020,
@@ -173,10 +176,10 @@ void app_about(void)
 
 #define PREF_ROW0 76
 #define PREF_ROWH 28
-#define SLIDER_Y 200
+#define SLIDER_Y 228
 #define SLIDER_X 40
 #define SLIDER_W 300
-#define NET_Y 262
+#define NET_Y 290
 
 static void prefs_row(surface_t *s, int x, int y, const char *label,
 		      const char *value)
@@ -198,22 +201,22 @@ static void prefs_draw_network(surface_t *s, int x, int y, int w)
 	icon_network(ic, 0, 0, 40, st.connected);
 	blit(s, ic, x + 16, y - 4, 255);
 	surf_free(ic);
-	draw_text(s, fonts[FONT_UI_BOLD], 15, x + 66, y + 14, 0xff000000, "Network");
+	draw_text(s, fonts[FONT_UI_BOLD], 15, x + 66, y + 14, 0xff000000, _("Network"));
 	p = paint_solid(st.connected ? 0xff2fbf3a : 0xffd03a30);
 	fill_circle(s, x + 70, y + 31, 5, &p);
 	if (st.connected)
-		snprintf(buf, sizeof(buf), "%s is connected to the Internet", st.kind);
+		snprintf(buf, sizeof(buf), _("%s is connected to the Internet"), _(st.kind));
 	else if (st.ifname[0])
-		snprintf(buf, sizeof(buf), "%s has no Internet connection", st.kind);
+		snprintf(buf, sizeof(buf), _("%s has no Internet connection"), _(st.kind));
 	else
-		snprintf(buf, sizeof(buf), "No network connection");
+		snprintf(buf, sizeof(buf), "%s", _("No network connection"));
 	draw_text(s, fonts[FONT_UI], 12, x + 82, y + 35, 0xff404040, buf);
 
 	y += 64;
-	prefs_row(s, x, y, "Interface:", st.ifname[0] ? st.ifname : "\xe2\x80\x94");
-	prefs_row(s, x, y + 20, "IP Address:", st.addr[0] ? st.addr : "\xe2\x80\x94");
-	prefs_row(s, x, y + 40, "Router:", st.gateway[0] ? st.gateway : "\xe2\x80\x94");
-	prefs_row(s, x, y + 60, "DNS Server:", st.dns[0] ? st.dns : "\xe2\x80\x94");
+	prefs_row(s, x, y, _("Interface:"), st.ifname[0] ? st.ifname : "\xe2\x80\x94");
+	prefs_row(s, x, y + 20, _("IP Address:"), st.addr[0] ? st.addr : "\xe2\x80\x94");
+	prefs_row(s, x, y + 40, _("Router:"), st.gateway[0] ? st.gateway : "\xe2\x80\x94");
+	prefs_row(s, x, y + 60, _("DNS Server:"), st.dns[0] ? st.dns : "\xe2\x80\x94");
 }
 
 static void prefs_tick(window_t *win)
@@ -241,27 +244,29 @@ static void prefs_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	blit(s, gear, x + 16, y + 8, 255);
 	surf_free(gear);
 	draw_text(s, fonts[FONT_UI_BOLD], 15, x + 66, y + 26, 0xff000000,
-		  "Desktop & Dock");
+		  _("Desktop & Dock"));
 	draw_text(s, fonts[FONT_UI], 12, x + 66, y + 44, 0xff505050,
-		  "Make " WC_NAME " look and feel the way you like.");
+		  _("Make Water Candy look and feel the way you like."));
 
-	aqua_checkbox(s, x + 40, y + PREF_ROW0, "Animate the blue wallpaper",
+	aqua_checkbox(s, x + 40, y + PREF_ROW0, _("Animate the blue wallpaper"),
 		      dt.set.animate_wallpaper);
-	aqua_checkbox(s, x + 40, y + PREF_ROW0 + PREF_ROWH, "Magnify Dock icons",
+	aqua_checkbox(s, x + 40, y + PREF_ROW0 + PREF_ROWH, _("Magnify Dock icons"),
 		      dt.set.magnify_dock);
 	aqua_checkbox(s, x + 40, y + PREF_ROW0 + 2 * PREF_ROWH,
-		      "Show seconds in the menu bar clock", dt.set.show_seconds);
+		      _("Show seconds in the menu bar clock"), dt.set.show_seconds);
+	aqua_checkbox(s, x + 40, y + PREF_ROW0 + 3 * PREF_ROWH,
+		      "Russian interface", dt.set.lang == LANG_RU);
 
-	snprintf(buf, sizeof(buf), "Wallpaper motion: %.1fx", dt.set.wallpaper_speed);
+	snprintf(buf, sizeof(buf), _("Wallpaper motion: %.1fx"), dt.set.wallpaper_speed);
 	draw_text(s, fonts[FONT_UI], 13, x + SLIDER_X, y + SLIDER_Y - 16, 0xff000000,
 		  buf);
 	aqua_slider(s, x + SLIDER_X, y + SLIDER_Y, SLIDER_W,
 		    dt.set.wallpaper_speed / 4.0f);
 	draw_text(s, fonts[FONT_UI], 11, x + SLIDER_X, y + SLIDER_Y + 26, 0xff606060,
-		  "Calm");
+		  _("Calm"));
 	draw_text(s, fonts[FONT_UI], 11, x + SLIDER_X + SLIDER_W -
-		  text_width(fonts[FONT_UI], 11, "Lively"), y + SLIDER_Y + 26,
-		  0xff606060, "Lively");
+		  text_width(fonts[FONT_UI], 11, _("Lively")), y + SLIDER_Y + 26,
+		  0xff606060, _("Lively"));
 
 	prefs_draw_network(s, x, y + NET_Y, w);
 }
@@ -287,6 +292,11 @@ static void prefs_mouse(window_t *win, const event_t *ev, int x, int y)
 				dt.set.magnify_dock = !dt.set.magnify_dock;
 			else if (row == 2)
 				dt.set.show_seconds = !dt.set.show_seconds;
+			else if (row == 3) {
+				dt.set.lang = dt.set.lang == LANG_RU ? LANG_EN : LANG_RU;
+				wm_set_title(win, _("System Preferences"));
+				wm_relayout_language();
+			}
 			wm_damage(win);
 		}
 	}
@@ -312,7 +322,7 @@ void app_prefs(void)
 		wm_focus(win);
 		return;
 	}
-	win = wm_create("System Preferences", APP_PREFS, 440, 430);
+	win = wm_create("System Preferences", APP_PREFS, 460, 458);
 	win->draw = prefs_draw;
 	win->mouse = prefs_mouse;
 	win->tick = prefs_tick;
@@ -332,7 +342,7 @@ static void clock_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	(void)h;
 	localtime_r(&t, &tm);
 	icon_clock(s, x + 20, y + 14, size, tm.tm_hour, tm.tm_min, tm.tm_sec);
-	strftime(buf, sizeof(buf), "%A, %B %e", &tm);
+	format_date(buf, sizeof(buf), &tm);
 	draw_text_center(s, fonts[FONT_UI], 13, x, w, y + size + 38, 0xff202020, buf);
 }
 
@@ -501,13 +511,13 @@ void wc_alert(const char *title, const char *message, const char *button2,
 	window_t *win;
 	int text_h;
 
-	snprintf(a->title, sizeof(a->title), "%s", title);
-	snprintf(a->msg, sizeof(a->msg), "%s", message);
+	snprintf(a->title, sizeof(a->title), "%s", _(title));
+	snprintf(a->msg, sizeof(a->msg), "%s", _(message));
 	if (button2)
-		snprintf(a->button2, sizeof(a->button2), "%s", button2);
+		snprintf(a->button2, sizeof(a->button2), "%s", _(button2));
 	a->act2 = act2;
 	text_h = wrap_text(NULL, fonts[FONT_UI], 12, 0, 0, ALERT_W - 122, 16, 0,
-			   message);
+			   a->msg);
 	win = wm_create("", APP_ALERT, ALERT_W,
 			TITLE_H + 1 + (text_h + 60 > 90 ? text_h + 60 : 90) + 52);
 	win->data = a;

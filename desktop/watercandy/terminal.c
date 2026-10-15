@@ -50,7 +50,26 @@ struct term {
 	int olen;
 	uint32_t utf;
 	int utf_left;
+	/* mouse selection, in cells; anchor and the other end */
+	int sel, sel_ax, sel_ay, sel_bx, sel_by, selecting;
 };
+
+/* Is cell (x, y) inside the selection (reading order, inclusive)? */
+static int in_selection(const struct term *t, int x, int y)
+{
+	int a = t->sel_ay * t->cols + t->sel_ax, b = t->sel_by * t->cols + t->sel_bx;
+	int i = y * t->cols + x;
+
+	if (!t->sel)
+		return 0;
+	if (a > b) {
+		int tmp = a;
+
+		a = b;
+		b = tmp;
+	}
+	return i >= a && i <= b;
+}
 
 static const uint32_t palette[18] = {
 	0xff000000, 0xffc23621, 0xff1f8f1f, 0xff9a8a10, 0xff2848c8, 0xffa830a8,
@@ -515,6 +534,8 @@ static void term_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 				bgc = 0xff3a3a3a;
 				fgc = 0xffffffff;
 			}
+			if (in_selection(t, cx, cy))
+				bgc = active ? 0xffb5d5ff : 0xffd8d8d8;
 			if (bgc != palette[DEF_BG])
 				fill_rect(s, px, py, t->cell_w, CELL_H, bgc);
 			if (is_cursor && !active) {
@@ -603,12 +624,26 @@ static void term_resize(window_t *win)
 	set_title(win, t);
 }
 
+static void term_copy(window_t *win);
+static void term_paste(window_t *win);
+
 static void term_key(window_t *win, const event_t *ev)
 {
 	struct term *t = win->data;
 	const char *seq = NULL;
-	char c;
 
+	if ((ev->mods & MOD_ALT) && (ev->ch == 'c' || ev->ch == 'C')) {
+		term_copy(win);
+		return;
+	}
+	if ((ev->mods & MOD_ALT) && (ev->ch == 'v' || ev->ch == 'V')) {
+		term_paste(win);
+		return;
+	}
+	if (t->sel) {
+		t->sel = 0;
+		wm_damage(win);
+	}
 	switch (ev->key) {
 	case KEY_UP: seq = "\033[A"; break;
 	case KEY_DOWN: seq = "\033[B"; break;
@@ -627,8 +662,10 @@ static void term_key(window_t *win, const event_t *ev)
 		return;
 	}
 	if (ev->ch) {
-		c = (char)ev->ch;
-		if (write(t->fd, &c, 1) < 0)
+		char u[8];
+		int n = utf8_encode(ev->ch, u);
+
+		if (write(t->fd, u, n) < 0)
 			return;
 	}
 }
@@ -656,10 +693,87 @@ static void term_tick(window_t *win)
 
 static void term_mouse(window_t *win, const event_t *ev, int x, int y)
 {
-	(void)win;
-	(void)ev;
-	(void)x;
-	(void)y;
+	struct term *t = win->data;
+	int cx = (x - PAD) / t->cell_w, cy = (y - PAD) / CELL_H;
+
+	if (cx < 0)
+		cx = 0;
+	if (cy < 0)
+		cy = 0;
+	if (cx >= t->cols)
+		cx = t->cols - 1;
+	if (cy >= t->rows)
+		cy = t->rows - 1;
+	if (ev->type == EV_BUTTON && ev->button == 1) {
+		if (ev->pressed) {
+			t->sel = 0;
+			t->selecting = 1;
+			t->sel_ax = t->sel_bx = cx;
+			t->sel_ay = t->sel_by = cy;
+		} else {
+			t->selecting = 0;
+		}
+		wm_damage(win);
+	} else if (ev->type == EV_MOTION && t->selecting) {
+		t->sel_bx = cx;
+		t->sel_by = cy;
+		t->sel = t->sel_bx != t->sel_ax || t->sel_by != t->sel_ay;
+		wm_damage(win);
+	} else if (ev->type == EV_BUTTON && ev->button == 3 && ev->pressed) {
+		win->paste(win);	/* middle click pastes, as in X11 */
+	}
+}
+
+static void term_copy(window_t *win)
+{
+	struct term *t = win->data;
+	int a, b, i, len = 0, line_end;
+	char *buf;
+
+	if (!t->sel)
+		return;
+	a = t->sel_ay * t->cols + t->sel_ax;
+	b = t->sel_by * t->cols + t->sel_bx;
+	if (a > b) {
+		int tmp = a;
+
+		a = b;
+		b = tmp;
+	}
+	buf = malloc((size_t)(b - a + 2) * 5 + t->rows);
+	line_end = len;
+	for (i = a; i <= b; i++) {
+		struct cell *c = &t->cells[i];
+		char u[8];
+		int n = utf8_encode(c->ch ? c->ch : ' ', u);
+
+		memcpy(buf + len, u, n);
+		len += n;
+		if (c->ch > ' ')
+			line_end = len;
+		if (i % t->cols == t->cols - 1 && i != b) {
+			len = line_end;	/* drop trailing spaces */
+			buf[len++] = '\n';
+			line_end = len;
+		}
+	}
+	buf[line_end] = 0;
+	clip_set(buf, CLIP_DESKTOP);
+	free(buf);
+}
+
+static void term_paste(window_t *win)
+{
+	struct term *t = win->data;
+	const char *text = clip_get();
+	size_t n = strlen(text), i;
+
+	for (i = 0; i < n; i++) {
+		char c = text[i] == '\n' ? '\r' : text[i];
+
+		if (write(t->fd, &c, 1) < 0)
+			return;
+	}
 }
 
 static void term_destroy(window_t *win)
@@ -746,6 +860,8 @@ static void open_terminal(const char *cmd)
 	win->tick = term_tick;
 	win->mouse = term_mouse;
 	win->resized = term_resize;
+	win->copy = term_copy;
+	win->paste = term_paste;
 	win->destroy = term_destroy;
 	t->fd = -1;
 	term_resize(win);

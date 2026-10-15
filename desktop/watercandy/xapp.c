@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "wc.h"
@@ -85,11 +86,13 @@ void app_firefox(void)
 
 #ifdef HAVE_X11
 
+#include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/cursorfont.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XTest.h>
+#include <X11/extensions/Xfixes.h>
 
 #define XVFB "/usr/bin/Xvfb"
 
@@ -97,7 +100,8 @@ struct xapp {
 	int disp;
 	pid_t xvfb, app;
 	Display *dpy;
-	int w, h;
+	int w, h;		/* visible size, follows the Aqua window */
+	int scr_w, scr_h;	/* size of the virtual screen */
 	char dir[64], cmd[512];
 	int state;		/* 0: waiting for Xvfb, 1: running */
 	double t0, last_frame;
@@ -106,6 +110,11 @@ struct xapp {
 	size_t pix_off;
 	uint32_t bpl;
 	Window main_win;
+	/* clipboard bridge */
+	Window helper;
+	Atom a_clipboard, a_utf8, a_targets, a_prop;
+	int fixes_event;
+	unsigned clip_seen;
 };
 
 int x11_available(void)
@@ -150,7 +159,7 @@ static int map_framebuffer(struct xapp *x)
 	x->bpl = be32(x->map + 48);
 	x->pix_off = be32(x->map + 0) + (size_t)be32(x->map + 76) * 12;
 	if (be32(x->map + 44) != 32 ||
-	    x->pix_off + (size_t)x->bpl * x->h > x->map_size) {
+	    x->pix_off + (size_t)x->bpl * x->scr_h > x->map_size) {
 		munmap(x->map, x->map_size);
 		x->map = NULL;
 		return -1;
@@ -221,6 +230,100 @@ static void manage(struct xapp *x, Window w, int map)
 	XSetInputFocus(x->dpy, w, RevertToPointerRoot, CurrentTime);
 }
 
+static void setup_clipboard(struct xapp *x)
+{
+	Window root = DefaultRootWindow(x->dpy);
+	int err;
+
+	x->helper = XCreateSimpleWindow(x->dpy, root, -10, -10, 1, 1, 0, 0, 0);
+	x->a_clipboard = XInternAtom(x->dpy, "CLIPBOARD", False);
+	x->a_utf8 = XInternAtom(x->dpy, "UTF8_STRING", False);
+	x->a_targets = XInternAtom(x->dpy, "TARGETS", False);
+	x->a_prop = XInternAtom(x->dpy, "WATERCANDY_CLIP", False);
+	if (XFixesQueryExtension(x->dpy, &x->fixes_event, &err))
+		XFixesSelectSelectionInput(x->dpy, root, x->a_clipboard,
+					   XFixesSetSelectionOwnerNotifyMask);
+	else
+		x->fixes_event = -1;
+	x->clip_seen = clip_version();
+	/* Offer whatever is already on the desktop clipboard. */
+	if (clip_get()[0])
+		XSetSelectionOwner(x->dpy, x->a_clipboard, x->helper, CurrentTime);
+}
+
+/* Someone in this X server asks for our clipboard: hand over the text. */
+static void serve_selection(struct xapp *x, XSelectionRequestEvent *r)
+{
+	XSelectionEvent ev = { .type = SelectionNotify, .requestor = r->requestor,
+			       .selection = r->selection, .target = r->target,
+			       .property = r->property, .time = r->time };
+	const char *text = clip_get();
+
+	if (ev.property == None)
+		ev.property = r->target;
+	if (r->target == x->a_targets) {
+		Atom targets[] = { x->a_targets, x->a_utf8, XA_STRING };
+
+		XChangeProperty(x->dpy, r->requestor, ev.property, XA_ATOM, 32,
+				PropModeReplace, (unsigned char *)targets, 3);
+	} else if (r->target == x->a_utf8 || r->target == XA_STRING) {
+		XChangeProperty(x->dpy, r->requestor, ev.property, r->target, 8,
+				PropModeReplace, (const unsigned char *)text,
+				strlen(text));
+	} else {
+		ev.property = None;
+	}
+	XSendEvent(x->dpy, r->requestor, False, 0, (XEvent *)&ev);
+}
+
+/* The text we asked for (after a program copied something) has arrived. */
+static void receive_selection(struct xapp *x)
+{
+	Atom type;
+	int fmt;
+	unsigned long n, after;
+	unsigned char *data = NULL;
+
+	if (XGetWindowProperty(x->dpy, x->helper, x->a_prop, 0, 1 << 18, True,
+			       AnyPropertyType, &type, &fmt, &n, &after,
+			       &data) == Success && data && fmt == 8) {
+		char *text = malloc(n + 1);
+
+		memcpy(text, data, n);
+		text[n] = 0;
+		clip_set(text, x->disp);
+		x->clip_seen = clip_version();
+		free(text);
+	}
+	if (data)
+		XFree(data);
+}
+
+/* US and Russian layouts in the X server; the active one follows ours. */
+static void setup_keyboard(struct xapp *x)
+{
+	char display[16];
+	pid_t pid;
+
+	snprintf(display, sizeof(display), ":%d", x->disp);
+	pid = fork();
+	if (pid == 0) {
+		int fd = open("/dev/null", O_RDWR);
+
+		if (fd >= 0) {
+			dup2(fd, 1);
+			dup2(fd, 2);
+		}
+		execlp("setxkbmap", "setxkbmap", "-display", display, "-layout",
+		       "us,ru", (char *)NULL);
+		_exit(127);
+	}
+	if (pid > 0)
+		waitpid(pid, NULL, 0);
+	XkbLockGroup(x->dpy, XkbUseCoreKbd, input_layout());
+	XFlush(x->dpy);
+}
+
 static void start_program(struct xapp *x)
 {
 	char display[16];
@@ -257,8 +360,8 @@ static void xapp_draw(window_t *win, surface_t *s, int x0, int y0, int w, int h)
 	if (!x->map) {
 		fill_rect(s, x0, y0, w, h, 0xffffffff);
 		draw_text_center(s, fonts[FONT_UI], 13, x0, w, y0 + h / 2,
-				 0xff707070, x->state ? "Starting\xe2\x80\xa6" :
-				 "Starting the X server\xe2\x80\xa6");
+				 0xff707070, x->state ? _("Starting\xe2\x80\xa6") :
+				 _("Starting the X server\xe2\x80\xa6"));
 		return;
 	}
 	for (y = 0; y < h && y < x->h; y++) {
@@ -303,6 +406,8 @@ static void xapp_tick(window_t *win)
 			      XCreateFontCursor(x->dpy, XC_left_ptr));
 		XSync(x->dpy, False);
 		map_framebuffer(x);
+		setup_keyboard(x);
+		setup_clipboard(x);
 		start_program(x);
 		x->state = 1;
 		wm_damage(win);
@@ -345,7 +450,31 @@ static void xapp_tick(window_t *win)
 			if (ev.xdestroywindow.window == x->main_win)
 				x->main_win = 0;
 			break;
+		case SelectionRequest:
+			serve_selection(x, &ev.xselectionrequest);
+			break;
+		case SelectionNotify:
+			if (ev.xselection.property != None)
+				receive_selection(x);
+			break;
+		default:
+			if (x->fixes_event >= 0 &&
+			    ev.type == x->fixes_event + XFixesSelectionNotify) {
+				XFixesSelectionNotifyEvent *se = (void *)&ev;
+
+				if (se->owner != None && se->owner != x->helper)
+					XConvertSelection(x->dpy, x->a_clipboard, x->a_utf8,
+							  x->a_prop, x->helper,
+							  se->selection_timestamp);
+			}
+			break;
 		}
+	}
+	/* Something new on the desktop clipboard: offer it in this X server. */
+	if (x->clip_seen != clip_version()) {
+		x->clip_seen = clip_version();
+		if (clip_owner() != x->disp)
+			XSetSelectionOwner(x->dpy, x->a_clipboard, x->helper, CurrentTime);
 	}
 	XFlush(x->dpy);
 
@@ -409,6 +538,22 @@ static void xapp_rawkey(window_t *win, const event_t *ev)
 	XFlush(x->dpy);
 }
 
+static void xapp_resized(window_t *win)
+{
+	struct xapp *x = win->data;
+
+	x->w = win->w - 2;
+	x->h = win->h - TITLE_H - 1;
+	if (x->w > x->scr_w)
+		x->w = x->scr_w;
+	if (x->h > x->scr_h)
+		x->h = x->scr_h;
+	if (x->dpy && x->main_win) {
+		XMoveResizeWindow(x->dpy, x->main_win, 0, 0, x->w, x->h);
+		XFlush(x->dpy);
+	}
+}
+
 static void xapp_destroy(window_t *win)
 {
 	struct xapp *x = win->data;
@@ -445,6 +590,20 @@ static int free_display(void)
 	return -1;
 }
 
+void x11_set_layout(int layout)
+{
+	window_t *w;
+
+	for (w = dt.windows; w; w = w->next) {
+		struct xapp *x = w->data;
+
+		if (w->rawkey != xapp_rawkey || !x->dpy || x->state != 1)
+			continue;
+		XkbLockGroup(x->dpy, XkbUseCoreKbd, layout);
+		XFlush(x->dpy);
+	}
+}
+
 int app_x11(const char *cmd, const char *title, enum app_id app)
 {
 	struct xapp *x;
@@ -470,13 +629,16 @@ int app_x11(const char *cmd, const char *title, enum app_id app)
 	ch = dt.h - MENUBAR_H - 230 > 760 ? 760 : dt.h - MENUBAR_H - 230;
 	x->w = cw & ~7;
 	x->h = ch;
+	/* The virtual screen is as big as ours so the window can grow. */
+	x->scr_w = dt.w > x->w ? dt.w : x->w;
+	x->scr_h = dt.h > x->h ? dt.h : x->h;
 	snprintf(x->dir, sizeof(x->dir), "/tmp/watercandy-x%d", x->disp);
 	mkdir(x->dir, 0700);
 	mkdir("/tmp/.X11-unix", 01777);
 	chmod("/tmp/.X11-unix", 01777);
 
 	snprintf(display, sizeof(display), ":%d", x->disp);
-	snprintf(screen, sizeof(screen), "%dx%dx24", x->w, x->h);
+	snprintf(screen, sizeof(screen), "%dx%dx24", x->scr_w, x->scr_h);
 	x->xvfb = fork();
 	if (x->xvfb == 0) {
 		int fd = open("/dev/null", O_RDWR);
@@ -501,11 +663,20 @@ int app_x11(const char *cmd, const char *title, enum app_id app)
 	win->mouse = xapp_mouse;
 	win->rawkey = xapp_rawkey;
 	win->own_cursor = 1;
+	win->resizable = 1;
+	win->min_w = 300;
+	win->min_h = 200;
+	win->resized = xapp_resized;
 	win->destroy = xapp_destroy;
 	return 0;
 }
 
 #else /* !HAVE_X11 */
+
+void x11_set_layout(int layout)
+{
+	(void)layout;
+}
 
 int x11_available(void)
 {

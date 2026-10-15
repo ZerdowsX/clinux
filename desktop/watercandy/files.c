@@ -17,7 +17,7 @@
 #define CELL_H 84
 #define ICON 48
 
-struct entry {
+struct fentry {
 	char name[256];
 	int is_dir, is_exec;
 };
@@ -25,7 +25,7 @@ struct entry {
 struct files {
 	char path[PATH_MAX];
 	char back[PATH_MAX];
-	struct entry *ents;
+	struct fentry *ents;
 	int n, sel, scroll;
 	double last_click;
 	int pressed_btn;
@@ -35,7 +35,7 @@ static surface_t *ic_folder, *ic_doc, *ic_exec;
 
 static int cmp_ent(const void *a, const void *b)
 {
-	const struct entry *x = a, *y = b;
+	const struct fentry *x = a, *y = b;
 
 	return strcasecmp(x->name, y->name);
 }
@@ -56,7 +56,7 @@ static void load_dir(struct files *f)
 	while ((de = readdir(d))) {
 		char full[PATH_MAX + 260];
 		struct stat st;
-		struct entry *e;
+		struct fentry *e;
 
 		if (de->d_name[0] == '.')
 			continue;
@@ -134,7 +134,7 @@ static void files_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	for (i = 0; i < f->n; i++) {
 		int cx = x + 8 + (i % cols) * CELL_W;
 		int cy = gy + 8 + (i / cols) * CELL_H - f->scroll;
-		struct entry *e = &f->ents[i];
+		struct fentry *e = &f->ents[i];
 		surface_t *ic = e->is_dir ? ic_folder : e->is_exec ? ic_exec : ic_doc;
 		int tw;
 
@@ -158,11 +158,11 @@ static void files_draw(window_t *win, surface_t *s, int x, int y, int w, int h)
 	}
 	if (!f->n)
 		draw_text_center(s, fonts[FONT_UI], 13, x, w, gy + 40, 0xff909090,
-				 "This folder is empty");
+				 _("This folder is empty"));
 	gfx_clip(s, x, y, w, h);
 
 	fill_rect(s, x, y + h - STATUS_H, w, 1, 0x40000000);
-	snprintf(status, sizeof(status), "%d item%s", f->n, f->n == 1 ? "" : "s");
+	format_items(status, sizeof(status), f->n);
 	draw_text_center(s, fonts[FONT_UI], 11, x, w, y + h - 6, 0xff404040, status);
 }
 

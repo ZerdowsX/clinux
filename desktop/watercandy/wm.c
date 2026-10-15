@@ -21,18 +21,26 @@ struct mitem {
 	int enabled;
 	void (*act)(void);
 	window_t *win;
+	void (*act_i)(int);	/* used instead of act when set */
+	int arg;
+	int checked;
 };
 
-#define MAX_MENUS	8
-#define MAX_ITEMS	24
+#define MAX_MENUS	16
+#define MAX_ITEMS	32
 #define ITEM_H		20
 #define SEP_H		10
+
+enum extra_kind { EXTRA_NONE, EXTRA_SPOTLIGHT, EXTRA_CLOCK, EXTRA_LAYOUT,
+		  EXTRA_VOLUME, EXTRA_NETWORK };
 
 struct menu {
 	const char *title;
 	int x, w;
 	struct mitem items[MAX_ITEMS];
 	int n;
+	enum extra_kind extra;	/* right-side status item */
+	const struct menu_custom *custom;
 };
 
 static struct menu menus[MAX_MENUS];
@@ -44,6 +52,8 @@ static int menubar_dirty = 1, dropdown_dirty;
 static char menubar_clock[64];
 static struct net_status net;
 static surface_t *net_icon[2];
+/* Draws status icons that live in other modules (volume, Spotlight). */
+static void extra_icon_draw(surface_t *s, int kind, int x, int w, int on);
 
 /* ---------------------------------------------------------------------- */
 /* Dock                                                                   */
@@ -72,6 +82,7 @@ static int clock_icon_minute = -1;
 static struct dock_item apps_dock[] = {
 	{ .kind = DOCK_APP, .app = APP_FILES, .name = "Files" },
 	{ .kind = DOCK_APP, .app = APP_FIREFOX, .name = "Firefox" },
+	{ .kind = DOCK_APP, .app = APP_STORE, .name = "App Store" },
 	{ .kind = DOCK_APP, .app = APP_TERMINAL, .name = "Terminal" },
 	{ .kind = DOCK_APP, .app = APP_CLOCK, .name = "Clock" },
 	{ .kind = DOCK_APP, .app = APP_PREFS, .name = "System Preferences" },
@@ -103,6 +114,7 @@ static const char *const app_names[APP_COUNT] = {
 	[APP_X11] = "X11",
 	[APP_FIREFOX] = "Firefox",
 	[APP_ALERT] = "Files",
+	[APP_STORE] = "App Store",
 };
 
 double now_s(void)
@@ -161,7 +173,7 @@ window_t *wm_create(const char *title, enum app_id app, int w, int h)
 	static int cascade;
 	int n = cascade++ % 6;
 
-	snprintf(win->title, sizeof(win->title), "%s", title);
+	snprintf(win->title, sizeof(win->title), "%s", _(title));
 	win->app = app;
 	if (w > dt.w - 40)
 		w = dt.w - 40;
@@ -343,6 +355,8 @@ int wm_animating(void)
 	for (w = dt.windows; w; w = w->next)
 		if (w->anim != ANIM_NONE)
 			return 1;
+	if (notify_animating())
+		return 1;
 	for (i = 0; i < ndock; i++)
 		if (dock[i].bounce_t0 > 0)
 			return 1;
@@ -680,7 +694,7 @@ static void draw_dock(surface_t *f)
 
 	if (dock_hover >= 0 && dock_hover < ndock && !button_down) {
 		struct dock_item *it = &dock[dock_hover];
-		const char *name = it->kind == DOCK_WINDOW ? it->win->title : it->name;
+		const char *name = it->kind == DOCK_WINDOW ? it->win->title : _(it->name);
 		int tw = text_width(fonts[FONT_UI_BOLD], 14, name);
 		int tx = (int)(it->x + it->size / 2 - tw / 2.0f);
 		int ty = (int)(dt.h - 9 - it->size - 10);
@@ -699,13 +713,27 @@ static void draw_dock(surface_t *f)
 
 static void act_about(void) { app_about(); }
 static void act_prefs(void) { app_prefs(); }
+static void act_store(void) { app_store(0); }
+static void act_updates(void) { app_store(1); }
 static void act_restart(void) { wc_shutdown(1); }
+
+static void act_logout(void)
+{
+	while (dt.windows)
+		wm_finalize(dt.windows);
+	dt.focus = NULL;
+	open_menu = -1;
+	menubar_dirty = 1;
+	login_start();
+}
 static void act_shutdown(void) { wc_shutdown(0); }
 static void act_new_files(void) { app_files(dt.home, "Home"); }
 static void act_new_term(void) { app_terminal(); }
 static void act_clock(void) { app_clock(); }
 static void act_firefox(void) { app_firefox(); }
 static void act_close(void) { if (dt.focus) wm_close(dt.focus); }
+static void act_copy(void) { if (dt.focus && dt.focus->copy) dt.focus->copy(dt.focus); }
+static void act_paste(void) { if (dt.focus && dt.focus->paste) dt.focus->paste(dt.focus); }
 static void act_minimize(void) { if (dt.focus) wm_minimize(dt.focus); }
 static void act_zoom(void) { if (dt.focus) wm_zoom(dt.focus); }
 static void act_go_computer(void) { app_files("/", "Water HD"); }
@@ -740,7 +768,15 @@ static struct menu *add_menu(const char *title)
 	struct menu *m = &menus[nmenus++];
 
 	memset(m, 0, sizeof(*m));
-	m->title = title;
+	m->title = _(title);
+	return m;
+}
+
+static struct menu *add_extra(enum extra_kind kind)
+{
+	struct menu *m = add_menu("");
+
+	m->extra = kind;
 	return m;
 }
 
@@ -752,11 +788,63 @@ static void add_item(struct menu *m, const char *label, const char *key,
 	if (m->n >= MAX_ITEMS)
 		return;
 	it = &m->items[m->n++];
-	it->label = label;
+	memset(it, 0, sizeof(*it));
+	it->label = _(label);
 	it->key = key;
 	it->enabled = enabled;
 	it->act = act;
-	it->win = NULL;
+}
+
+static void add_item_i(struct menu *m, const char *label, int enabled,
+		       void (*act_i)(int), int arg, int checked)
+{
+	add_item(m, label, NULL, enabled, NULL);
+	m->items[m->n - 1].act_i = act_i;
+	m->items[m->n - 1].arg = arg;
+	m->items[m->n - 1].checked = checked;
+}
+
+static void act_layout(int l)
+{
+	input_set_layout(l);
+	x11_set_layout(l);
+	menubar_dirty = 1;
+	dt.redraw = 1;
+}
+
+static void act_network_prefs(void) { app_prefs(); }
+
+static void build_extras(void)
+{
+	static char date[64], status[96];
+	time_t t = time(NULL);
+	struct tm tm;
+	struct menu *m;
+
+	/* Right to left, as they appear on screen. */
+	m = add_extra(EXTRA_CLOCK);
+	localtime_r(&t, &tm);
+	format_date(date, sizeof(date), &tm);
+	add_item(m, date, NULL, 0, NULL);
+	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Show Clock", NULL, 1, act_clock);
+
+	m = add_extra(EXTRA_LAYOUT);
+	add_item_i(m, "U.S.", 1, act_layout, LAYOUT_US, input_layout() == LAYOUT_US);
+	add_item_i(m, "\xd0\xa0\xd1\x83\xd1\x81\xd1\x81\xd0\xba\xd0\xb0\xd1\x8f", 1,
+		   act_layout, LAYOUT_RU, input_layout() == LAYOUT_RU);
+	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Alt+Shift", NULL, 0, NULL);
+
+	m = add_extra(EXTRA_NETWORK);
+	if (net.connected)
+		snprintf(status, sizeof(status), _("%s is connected to the Internet"),
+			 _(net.kind));
+	else
+		snprintf(status, sizeof(status), "%s", _("No network connection"));
+	add_item(m, status, NULL, 0, NULL);
+	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Network Preferences...", NULL, 1, act_network_prefs);
 }
 
 static void build_menus(void)
@@ -771,10 +859,19 @@ static void build_menus(void)
 	m = add_menu("");
 	add_item(m, "About This Computer", NULL, 1, act_about);
 	add_item(m, "-", NULL, 0, NULL);
+	add_item(m, "Software Update...", NULL, 1, act_updates);
+	add_item(m, "App Store...", NULL, 1, act_store);
+	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "System Preferences...", NULL, 1, act_prefs);
 	add_item(m, "Dock", NULL, 0, NULL);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Restart...", NULL, 1, act_restart);
+	if (user_can_login()) {
+		static char logout[96];
+
+		snprintf(logout, sizeof(logout), _("Log Out %s..."), dt.user);
+		add_item(m, logout, NULL, 1, act_logout);
+	}
 	add_item(m, "Shut Down...", NULL, 1, act_shutdown);
 
 	m = add_menu(front_app_name());
@@ -800,8 +897,9 @@ static void build_menus(void)
 	add_item(m, "Undo", "\xe2\x8c\x98Z", 0, NULL);
 	add_item(m, "-", NULL, 0, NULL);
 	add_item(m, "Cut", "\xe2\x8c\x98X", 0, NULL);
-	add_item(m, "Copy", "\xe2\x8c\x98" "C", 0, NULL);
-	add_item(m, "Paste", "\xe2\x8c\x98V", 0, NULL);
+	add_item(m, "Copy", "\xe2\x8c\x98" "C", has_win && dt.focus->copy, act_copy);
+	add_item(m, "Paste", "\xe2\x8c\x98V", has_win && dt.focus->paste &&
+		 clip_get()[0], act_paste);
 	add_item(m, "Select All", "\xe2\x8c\x98" "A", 0, NULL);
 
 	m = add_menu("View");
@@ -830,6 +928,8 @@ static void build_menus(void)
 
 	m = add_menu("Help");
 	add_item(m, WC_NAME " Help", "\xe2\x8c\x98?", 0, NULL);
+
+	build_extras();
 }
 
 static void draw_menubar(void)
@@ -853,7 +953,7 @@ static void draw_menubar(void)
 	fill_rect(s, 0, MENUBAR_H - 1, s->w, 1, 0x80606060);
 
 	x = 8;
-	for (i = 0; i < nmenus; i++) {
+	for (i = 0; i < nmenus && !menus[i].extra; i++) {
 		struct menu *m = &menus[i];
 		font_t *f = i == 1 ? fonts[FONT_UI_BOLD] : fonts[FONT_UI];
 		int w = i == 0 ? 30 : text_width(f, 14, m->title) + 22;
@@ -870,31 +970,43 @@ static void draw_menubar(void)
 		x += w;
 	}
 
+	/* Status items, laid out from the right edge. */
 	localtime_r(&t, &tm);
-	strftime(menubar_clock, sizeof(menubar_clock),
-		 dt.set.show_seconds ? "%a %l:%M:%S %p" : "%a %l:%M %p", &tm);
-	{
-		const char *c = menubar_clock;
-		char buf[64];
+	format_clock(menubar_clock, sizeof(menubar_clock), &tm, dt.set.show_seconds);
+	x = s->w - 6;
+	for (; i < nmenus; i++) {
+		struct menu *m = &menus[i];
+		int w = 30, on = open_menu == i;
+		uint32_t fg = on ? 0xffffffff : 0xff000000;
 
-		/* collapse the padding space strftime adds for %l */
-		snprintf(buf, sizeof(buf), "%s", c);
-		{
-			char *dbl = strstr(buf, "  ");
-
-			if (dbl)
-				memmove(dbl, dbl + 1, strlen(dbl));
+		if (m->extra == EXTRA_CLOCK)
+			w = text_width(fonts[FONT_UI], 14, menubar_clock) + 20;
+		x -= w;
+		m->x = x;
+		m->w = w;
+		if (on)
+			aqua_highlight(s, x, 0, w, MENUBAR_H - 1, 0);
+		switch (m->extra) {
+		case EXTRA_CLOCK:
+			draw_text(s, fonts[FONT_UI], 14, x + 10, 16, fg, menubar_clock);
+			break;
+		case EXTRA_LAYOUT:
+			icon_flag(s, x + 6, 5, 18, 12, input_layout());
+			break;
+		case EXTRA_NETWORK:
+			if (!net_icon[0]) {
+				net_icon[0] = surf_new(18, 18);
+				icon_network(net_icon[0], 0, 0, 18, 0);
+				net_icon[1] = surf_new(18, 18);
+				icon_network(net_icon[1], 0, 0, 18, 1);
+			}
+			blit(s, net_icon[net.connected], x + 6, 2, 255);
+			break;
+		default:
+			if (m->custom)
+				extra_icon_draw(s, m->extra, x, w, on);
+			break;
 		}
-		int cx = s->w - 16 - text_width(fonts[FONT_UI], 14, buf);
-
-		draw_text(s, fonts[FONT_UI], 14, cx, 16, 0xff000000, buf);
-		if (!net_icon[0]) {
-			net_icon[0] = surf_new(18, 18);
-			icon_network(net_icon[0], 0, 0, 18, 0);
-			net_icon[1] = surf_new(18, 18);
-			icon_network(net_icon[1], 0, 0, 18, 1);
-		}
-		blit(s, net_icon[net.connected], cx - 30, 2, 255);
 	}
 	menubar_dirty = 0;
 }
@@ -929,6 +1041,10 @@ static void draw_dropdown(void)
 	}
 	w += kw + (kw ? 20 : 0);
 	h = item_y(m, m->n) + 5;
+	if (m->custom) {
+		w = m->custom->w;
+		h = m->custom->h;
+	}
 	dd_x = m->x;
 	if (dd_x + w > dt.w - 2)
 		dd_x = dt.w - 2 - w;
@@ -948,6 +1064,11 @@ static void draw_dropdown(void)
 	p = paint_solid(0x50000000);
 	stroke_rrect(s, 0, -8, w, h + 8, 6, 1, &p);
 
+	if (m->custom) {
+		m->custom->draw(s, w, h);
+		dropdown_dirty = 0;
+		return;
+	}
 	for (i = 0; i < m->n; i++) {
 		struct mitem *it = &m->items[i];
 		int y = item_y(m, i);
@@ -961,6 +1082,8 @@ static void draw_dropdown(void)
 			aqua_highlight(s, 1, y, w - 2, ITEM_H, 0);
 			col = 0xffffffff;
 		}
+		if (it->checked)
+			draw_text(s, fonts[FONT_UI], 14, 6, y + 15, col, "\xe2\x9c\x93");
 		gfx_clip(s, 0, y, w - (it->key ? kw + 26 : 8), ITEM_H);
 		draw_text(s, fonts[FONT_UI], 14, 20, y + 15, col, it->label);
 		gfx_noclip();
@@ -979,6 +1102,8 @@ static int dropdown_item_at(int x, int y)
 	if (open_menu < 0)
 		return -1;
 	m = &menus[open_menu];
+	if (m->custom)
+		return -1;
 	if (x < dd_x || x >= dd_x + dd_w || y < dd_y || y >= dd_y + dd_h)
 		return -1;
 	for (i = 0; i < m->n; i++) {
@@ -1010,6 +1135,40 @@ static void open_menu_at(int idx)
 	menubar_dirty = 1;
 	dropdown_dirty = 1;
 	dt.redraw = 1;
+	if (idx >= 0 && menus[idx].custom && menus[idx].custom->opened)
+		menus[idx].custom->opened();
+}
+
+void wm_menu_changed(void)
+{
+	dropdown_dirty = 1;
+	dt.redraw = 1;
+}
+
+void wm_menu_close(void)
+{
+	open_menu_at(-1);
+}
+
+static int in_dropdown(int x, int y)
+{
+	return open_menu >= 0 && x >= dd_x && x < dd_x + dd_w && y >= dd_y &&
+	       y < dd_y + dd_h;
+}
+
+/* Mouse events inside a custom dropdown; returns 1 if consumed. */
+static int custom_menu_mouse(const event_t *ev)
+{
+	const struct menu_custom *c;
+
+	if (open_menu < 0 || !(c = menus[open_menu].custom) || !c->mouse)
+		return 0;
+	if (!in_dropdown(ev->x, ev->y) && !(ev->type == EV_MOTION && button_down))
+		return 0;
+	if (c->mouse(ev, ev->x - dd_x, ev->y - dd_y))
+		open_menu_at(-1);
+	wm_menu_changed();
+	return 1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1077,6 +1236,11 @@ static void handle_button(const event_t *ev)
 	int i;
 
 	button_down = ev->pressed;
+	if (custom_menu_mouse(ev))
+		return;
+	if (ev->pressed && ev->button == 1 && open_menu < 0 &&
+	    notify_click(ev->x, ev->y))
+		return;
 	if (!ev->pressed) {
 		if (open_menu >= 0) {
 			int it = dropdown_item_at(ev->x, ev->y);
@@ -1090,6 +1254,8 @@ static void handle_button(const event_t *ev)
 						wm_restore(mi->win);
 					else
 						wm_focus(mi->win);
+				} else if (mi->enabled && mi->act_i) {
+					mi->act_i(mi->arg);
 				} else if (mi->enabled && mi->act) {
 					mi->act();
 				}
@@ -1232,6 +1398,8 @@ static void handle_motion(const event_t *ev)
 	ptr_y = ev->y;
 	dt.redraw = 1;
 
+	if (custom_menu_mouse(ev))
+		return;
 	if (open_menu >= 0) {
 		int it = dropdown_item_at(ev->x, ev->y);
 
@@ -1305,6 +1473,16 @@ static int is_key(const event_t *ev, unsigned ch)
 
 void wm_event(const event_t *ev)
 {
+	if (login_active()) {
+		if (ev->type == EV_MOTION || ev->type == EV_BUTTON) {
+			ptr_x = ev->x;
+			ptr_y = ev->y;
+			dt.redraw = 1;
+		}
+		if (ev->type != EV_MOTION)
+			login_event(ev);
+		return;
+	}
 	switch (ev->type) {
 	case EV_MOTION:
 		handle_motion(ev);
@@ -1323,6 +1501,11 @@ void wm_event(const event_t *ev)
 				w->mouse(w, ev, ev->x - w->x - 1, ev->y - w->y - TITLE_H);
 		}
 		break;
+	case EV_LAYOUT:
+		x11_set_layout(input_layout());
+		menubar_dirty = 1;
+		dt.redraw = 1;
+		break;
 	case EV_KEYRAW:
 		/* Releases always go through so no key is left stuck down. */
 		if (dt.focus && dt.focus->rawkey && (open_menu < 0 || !ev->pressed))
@@ -1330,8 +1513,13 @@ void wm_event(const event_t *ev)
 		break;
 	case EV_KEYPRESS:
 		if (open_menu >= 0) {
+			const struct menu_custom *c = menus[open_menu].custom;
+
 			if (ev->ch == 27)
 				open_menu_at(-1);
+			else if (c && c->key && c->key(ev))
+				open_menu_at(-1);
+			wm_menu_changed();
 			return;
 		}
 		/* Alt (or the Windows key) acts as the Command key. */
@@ -1356,6 +1544,26 @@ void wm_event(const event_t *ev)
 /* ---------------------------------------------------------------------- */
 /* Main hooks                                                             */
 
+static void extra_icon_draw(surface_t *s, int kind, int x, int w, int on)
+{
+	(void)s;
+	(void)kind;
+	(void)x;
+	(void)w;
+	(void)on;
+}
+
+/* After switching the interface language. */
+void wm_relayout_language(void)
+{
+	window_t *w;
+
+	for (w = dt.windows; w; w = w->next)
+		w->dirty = 1;
+	menubar_dirty = 1;
+	dt.redraw = 1;
+}
+
 void wm_init(void)
 {
 	int i;
@@ -1373,6 +1581,9 @@ void wm_init(void)
 			break;
 		case APP_FIREFOX:
 			apps_dock[i].icon = render_icon(icon_globe, dock_max);
+			break;
+		case APP_STORE:
+			apps_dock[i].icon = render_icon(icon_store, dock_max);
 			break;
 		case APP_PREFS:
 			apps_dock[i].icon = render_icon(icon_gear, dock_max);
@@ -1519,6 +1730,12 @@ void wm_render(void)
 	paint_t p;
 
 	memcpy(f->px, dt.wall->px, (size_t)f->w * f->h * 4);
+	if (login_active()) {
+		login_render(f);
+		blit(f, cursor_surf, ptr_x - 3, ptr_y - 3, 255);
+		dt.frames++;
+		return;
+	}
 
 	/* desktop icon */
 	if (disk_selected) {
@@ -1562,6 +1779,8 @@ void wm_render(void)
 	blit(f, menubar_surf, 0, 0, 255);
 
 	draw_dock(f);
+
+	notify_render(f);
 
 	if (open_menu >= 0) {
 		if (dropdown_dirty || !dropdown_surf)

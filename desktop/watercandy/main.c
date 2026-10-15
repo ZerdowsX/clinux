@@ -104,6 +104,13 @@ void wc_shutdown(int reboot_instead)
 	dt.quit = 1;
 }
 
+void session_start(void)
+{
+	/* Look for software updates a minute after logging in. */
+	updates_schedule(60);
+	dt.redraw = 1;
+}
+
 static void init_desktop(int w, int h)
 {
 	dt.w = w;
@@ -139,8 +146,11 @@ static int write_ppm(const char *path, const surface_t *s)
 
 static void reap_children(void)
 {
-	while (waitpid(-1, NULL, WNOHANG) > 0)
-		;
+	int status;
+	pid_t pid;
+
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+		proc_child_exited(pid, status);
 }
 
 /* Offscreen rendering, used to preview the desktop without hardware. */
@@ -170,6 +180,12 @@ static int render_offscreen(int argc, char **argv)
 			app_prefs();
 		else if (!strcmp(argv[i], "clock"))
 			app_clock();
+		else if (!strcmp(argv[i], "store"))
+			app_store(0);
+		else if (!strcmp(argv[i], "notify"))
+			notify("Обновление ПО", "Доступно 3 обновления", NULL);
+		else if (!strcmp(argv[i], "login"))
+			login_start();
 		else if (!strcmp(argv[i], "menu")) {
 			event_t ev = { .type = EV_BUTTON, .x = 15, .y = 10, .button = 1,
 				       .pressed = 1 };
@@ -187,6 +203,8 @@ static int render_offscreen(int argc, char **argv)
 	while (now_s() - t0 < (getenv("WC_SETTLE") ? atof(getenv("WC_SETTLE")) : 0.6)) {
 		dt.now = now_s();
 		wm_tick();
+		reap_children();
+		proc_tick();
 		usleep(20000);
 	}
 	dt.now = now_s() + 1;
@@ -207,6 +225,7 @@ int main(int argc, char **argv)
 	if (!getenv("HOME"))
 		setenv("HOME", "/root", 1);
 	user_init();
+	i18n_init();
 	if (fonts_init())
 		return 1;
 	if (argc > 2 && !strcmp(argv[1], "--render"))
@@ -221,6 +240,13 @@ int main(int argc, char **argv)
 	if (input_open(disp.w, disp.h))
 		fprintf(stderr, "watercandy: warning: no input devices\n");
 	init_desktop(disp.w, disp.h);
+	if (user_can_login() && !user_autologin()) {
+		login_start();
+	} else {
+		if (user_autologin())
+			user_select(user_autologin());
+		session_start();
+	}
 	if (argc > 1 && !strcmp(argv[1], "--demo"))
 		app_about();
 	ctl_open();
@@ -262,6 +288,8 @@ int main(int argc, char **argv)
 		}
 		wm_tick();
 		reap_children();
+		proc_tick();
+		updates_tick();
 
 		if (dt.redraw || wm_animating()) {
 			wm_render();

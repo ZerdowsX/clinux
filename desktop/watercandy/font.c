@@ -139,6 +139,33 @@ unsigned utf8_next(const char **sp)
 	return c;
 }
 
+int utf8_encode(unsigned c, char *o)
+{
+	int n;
+
+	if (c < 0x80) {
+		o[0] = c;
+		n = 1;
+	} else if (c < 0x800) {
+		o[0] = 0xc0 | c >> 6;
+		o[1] = 0x80 | (c & 63);
+		n = 2;
+	} else if (c < 0x10000) {
+		o[0] = 0xe0 | c >> 12;
+		o[1] = 0x80 | ((c >> 6) & 63);
+		o[2] = 0x80 | (c & 63);
+		n = 3;
+	} else {
+		o[0] = 0xf0 | c >> 18;
+		o[1] = 0x80 | ((c >> 12) & 63);
+		o[2] = 0x80 | ((c >> 6) & 63);
+		o[3] = 0x80 | (c & 63);
+		n = 4;
+	}
+	o[n] = 0;
+	return n;
+}
+
 static struct glyph *get_glyph(font_t *f, float size, unsigned cp)
 {
 	int size10 = (int)(size * 10 + 0.5f);
