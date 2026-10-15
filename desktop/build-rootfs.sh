@@ -118,7 +118,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
 	network-manager wpasupplicant iw wireless-regdb \
-	grub-efi-amd64-bin grub-pc-bin grub-common dosfstools fdisk \
+	grub-efi-amd64-bin grub-pc-bin grub-common grub2-common dosfstools fdisk \
 	iproute2 iputils-ping wget curl gnupg tzdata kmod \
 	sudo less nano bash-completion locales \
 	$DESKTOP_PKGS $BUILD_PKGS $EXTRA_PACKAGES
