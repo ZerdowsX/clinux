@@ -181,6 +181,9 @@ fi
 if [ -d "$OUT/modroot/lib/modules" ]; then
 	mkdir -p "$MNT/lib/modules"
 	cp -a "$OUT/modroot/lib/modules/." "$MNT/lib/modules/"
+	for v in "$OUT"/modroot/lib/modules/*; do
+		chroot "$MNT" depmod -a "$(basename "$v")"
+	done
 fi
 if [ -f "$OUT/bzImage" ]; then
 	mkdir -p "$MNT/boot"

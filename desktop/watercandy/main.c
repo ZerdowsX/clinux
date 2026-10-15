@@ -204,6 +204,8 @@ static int render_offscreen(int argc, char **argv)
 				wm_event(&c);
 			}
 		}
+		else if (!strcmp(argv[i], "installer"))
+			app_installer();
 		else if (!strcmp(argv[i], "login"))
 			login_start();
 		else if (!strcmp(argv[i], "menu")) {
