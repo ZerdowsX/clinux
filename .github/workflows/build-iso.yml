@@ -1,0 +1,98 @@
+# Builds the Water Candy live ISO (kernel + Debian + Water Candy + Firefox)
+# on GitHub's servers. The ISO is attached to the run as an artifact and,
+# for the master branch or a manual run, published as the "latest-iso"
+# release so it can be downloaded without logging in.
+name: Build ISO
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'desktop/**'
+      - 'kernel/configs/x11_desktop.config'
+      - '.github/workflows/build-iso.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'kernel/configs/x11_desktop.config'
+      - '.github/workflows/build-iso.yml'
+  workflow_dispatch:
+    inputs:
+      distro:
+        description: 'debian or ubuntu'
+        default: 'debian'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iso:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      DISTRO: ${{ github.event.inputs.distro || 'debian' }}
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            build-essential flex bison bc libelf-dev libssl-dev kmod cpio \
+            debootstrap debian-archive-keyring e2fsprogs \
+            grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools \
+            squashfs-tools busybox-static file
+
+      - name: Build the kernel
+        run: ./desktop/build-kernel.sh
+
+      - name: Build the system (${{ env.DISTRO }})
+        run: sudo -E env DISTRO=$DISTRO ./desktop/build-rootfs.sh
+
+      - name: Build the ISO
+        run: |
+          sudo ./desktop/build-iso.sh
+          cd desktop/out
+          sudo chown "$(id -u)" clinux-watercandy.iso
+          sha256sum clinux-watercandy.iso > clinux-watercandy.iso.sha256
+          ls -lh clinux-watercandy.iso
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clinux-watercandy-iso
+          path: |
+            desktop/out/clinux-watercandy.iso
+            desktop/out/clinux-watercandy.iso.sha256
+          compression-level: 0
+          retention-days: 14
+
+      - name: Publish the "latest-iso" release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest-iso --yes --cleanup-tag || true
+          gh release create latest-iso \
+            desktop/out/clinux-watercandy.iso \
+            desktop/out/clinux-watercandy.iso.sha256 \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Water Candy (свежая сборка)" \
+            --notes "Загрузочный образ Water Candy, собранный автоматически из $GITHUB_SHA ($DISTRO).
+
+          Запишите его на флешку (всё на ней сотрётся):
+          sudo dd if=clinux-watercandy.iso of=/dev/sdX bs=4M status=progress oflag=sync
+
+          Логин: user, пароль: user."
